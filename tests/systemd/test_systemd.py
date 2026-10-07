@@ -37,6 +37,12 @@ def wait_for(predicate, seconds=20):
     raise AssertionError("Condition did not become true")
 
 
+def unit_active(unit):
+    r = subprocess.run(["systemctl", "is-active", unit], text=True, capture_output=True, timeout=10)
+    assert r.returncode in (0, 3), (unit, r.returncode, r.stdout, r.stderr)
+    return r.returncode == 0 and r.stdout.strip() == "active"
+
+
 def failures():
     for _ in range(2):
         r = subprocess.run(["sshpass", "-p", "incorrect-test-password", "ssh", "-p", "2222",
@@ -121,7 +127,7 @@ assert table_handle(before_upgrade) == table_handle(after_upgrade), "Upgrade rep
 # A timed rollback must restart a protector that the pending policy stopped.
 cm("protect", "ssh", "disable", "--timeout", "3", guarded=True)
 wait_for(lambda: not Path("/var/lib/command-center/pending.json").exists())
-wait_for(lambda: run("systemctl", "is-active", "command-center-guard.service").strip() == "active")
+wait_for(lambda: unit_active("command-center-guard.service"))
 cm("protect", "ssh", "disable")
 assert run("systemctl", "is-active", "command-center-guard.service", expected=3).strip() == "inactive"
 logs = json.loads(cm("logs", "--json", "--lines", "50"))
