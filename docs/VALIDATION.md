@@ -19,14 +19,35 @@ The implementation workspace cannot create network namespaces or use native Netl
 
 ## GitHub verification
 
-The repository's [Build and verify workflow](https://github.com/The-Specter-X/command-center/actions/workflows/ci.yml) is configured for:
+On 2026-10-07, all five jobs passed for source commit
+[4126f6045f594e8c7130848cef8e7625e16753c3](https://github.com/The-Specter-X/command-center/commit/4126f6045f594e8c7130848cef8e7625e16753c3)
+in [workflow run 37664125600](https://github.com/The-Specter-X/command-center/actions/runs/37664125600).
 
-- Debian 13/testing strict builds, offline tests and packaging.
-- Clang address/undefined/leak sanitizers, GCC analyzer and Clang strict tests.
-- Privileged IPv4/IPv6 namespace packet tests and native network reports.
-- Actual systemd, OpenSSH authentication/journal and Debian package lifecycle.
+| CI job | Observed result |
+| --- | --- |
+| Debian 13 | Strict GCC build, core tests, 32 offline CLI tests and Debian package build passed |
+| Debian testing | Strict GCC build, core tests, 32 offline CLI tests and Debian package build passed |
+| Analysis on Ubuntu 24.04 | Clang address/undefined/leak sanitizers, GCC analyzer and strict Clang build/tests passed |
+| Native on Ubuntu 24.04 | Real IPv4/IPv6 namespace packet tests and 4 read-only networking tests passed |
+| Systemd on Debian 13 | Actual service lifecycle, real failed OpenSSH authentication, automatic bans/expiry, staged protection, timed rollback/confirmation, journal/reporting, APT scheduling, active/inactive upgrades, removal and purge passed |
 
-Use the workflow result for the exact commit being deployed. An observed CI result will be recorded here after the run completes; configured jobs alone are not claimed as passed.
+The native job also verified passive initialization, foreign-table preservation,
+rule precedence, connection meters, timed/permanent/scoped bans, UDP and reject,
+drift repair, outgoing destination rules, isolation of established outbound
+connections and logging quotas that preserve blocked verdicts.
+
+The systemd fixture verified that an active SSH protector restarts during an
+upgrade while the live policy table retains its handle. Inactive services stay
+inactive. Removal resolves pending rollback and removes CM enforcement before
+the executable disappears; purge preserves unrelated administrator files.
+
+The run includes `packages-0` (Debian 13) and `packages-1` (Debian testing), each
+with the main/shortcut `.deb` packages, `.buildinfo` and `.changes` files.
+These are CI outputs rather than a separately signed release repository.
+
+Use the workflow result for the exact commit being deployed. The observed pass
+above applies to the linked source, not to untested future changes. Public-IP
+option validation ran; an external public-IP service request was not part of CI.
 
 ## Deployment acceptance
 
