@@ -1,0 +1,212 @@
+.\" SPDX-License-Identifier: GPL-2.0-or-later
+.TH COMMAND-CENTER 1 "October 2026" "Command Center 2.0.0"
+.SH NAME
+command-center \- native Debian host firewall and server administration tool
+.SH SYNOPSIS
+.B command-center
+.RI [ options ] " command " [ arguments ]
+.br
+.B cm
+.RI [ options ] " command " [ arguments ]
+.SH DESCRIPTION
+Command Center manages two owned nftables inet tables, OpenSSH
+authentication protection, server reports, journal views and Debian
+unattended-update controls. The optional shortcut package supplies cm.
+.PP
+Installation does not start or enable CM. A fresh start preserves
+existing filtering behavior. Explicit rules/defaults/profiles introduce
+restrictions. Other applications' tables are never flushed or modified.
+CM manages host input/output, not forwarding/NAT or bridge-container
+published ports. An accept cannot override another table's drop.
+.SH FIREWALL
+.TP
+.B allow|deny|reject|limit [in|out] SERVICE [OPTIONS]
+Direction defaults to in. SERVICE is an alias, PORT/tcp, PORT/udp,
+PORT/both, a range such as 8000-8010/tcp, or all. All covers every
+IP protocol for ordinary rules and new TCP SYNs for limit.
+.TP
+.B --from CIDR, --to CIDR, --interface NAME, --family 4|6|any
+Numeric source/destination filters, exact interface and IP family.
+Hostnames, contradictory families and duplicate options are rejected.
+.TP
+.B --comment TEXT
+Printable ASCII comment, at most 159 bytes.
+.TP
+.B --rate N/second|minute|hour, --burst N
+TCP token-bucket rate/capacity. Defaults: 6/minute, burst 5.
+Incoming uses source addresses; outgoing uses destination addresses.
+All matching gates precede ordinary allows. A full tracking set drops.
+This counts SYN packets, including possible retransmissions, not passwords.
+.TP
+.B rules [--json]
+Show stable numbers and evaluation order. Deletion does not renumber.
+.TP
+.B delete NUMBER
+Delete a stable rule ID.
+.TP
+.B move NUMBER before NUMBER
+Change first-match ordinary rule order.
+.TP
+.B default in|out allow|deny
+Set an explicit CM default. Deny policies retain essential networking
+and ordinary established/related handling. Changing outgoing defaults
+exits special isolation handling.
+.SH LIFECYCLE
+.TP
+.B init
+Create passive saved settings without activating CM.
+.TP
+.B start, stop
+Activate/remove only CM enforcement for this boot. Save rules and bans.
+Start refuses uncommitted desired-file drift; reload approves it.
+.TP
+.B enable, disable
+Enable/disable systemd boot startup without changing current filtering.
+.TP
+.B --now
+Also start/stop when used with enable/disable.
+.TP
+.B status, doctor
+Report activation, boot/service state, numbered rules, bans and drift.
+.TP
+.B reload
+Validate and atomically rebuild only CM objects if active; commit
+desired settings while stopped without starting CM.
+.TP
+.B export, check
+Export desired native source, or validate it against the current kernel.
+Offline check validates the schema only.
+.SH SAFETY AND RECOVERY
+Live policy changes normally require confirm within 120 seconds.
+A transient systemd timer restores the previous policy if unconfirmed.
+A fresh passive start requires no confirmation. Verify management
+access using a new connection before confirming.
+.TP
+.B confirm, rollback
+Accept a pending live change or restore its previous configuration/state.
+.TP
+.B recover [checkpoint]
+Recover interrupted intent, or explicitly restore committed configuration/state.
+.TP
+.B config show|validate|restore
+Show/check desired schema, or restore desired settings from the checkpoint.
+Boot loads committed policy and resolves unconfirmed changes.
+.SH PROFILES AND ALIASES
+.TP
+.B profiles, profile show NAME, use NAME
+Profiles: passive, guard-only, web-server, ssh-only, isolation.
+Use --ssh-port PORT/tcp for the actual management port and --keep-rules
+to retain ordinary rules. Guard-only preserves policy/rules.
+.PP
+Web-server permits management SSH/HTTP/HTTPS; ssh-only permits management
+SSH. Both deny incoming by default and allow outgoing. Isolation also
+blocks ordinary outgoing initiation and pre-existing outbound flows,
+retaining management replies, loopback and essential control/DHCP traffic.
+Manual bans persist across profiles.
+.TP
+.B services, service show NAME, service set NAME PORT/tcp|udp|both, service delete NAME
+Show/override aliases. Existing rules retain resolved numeric ports.
+Built-ins include ssh, http, https, quic, dns, ntp, smtp, submission,
+imap, imaps, wireguard, postgresql and mysql.
+.SH AUTHENTICATION PROTECTION
+.TP
+.B protect ssh [--failures N] [--window DURATION] [--ban DURATION|permanent] [--scope ssh|all] [--port PORT/tcp]
+Count supported trusted root OpenSSH failure log events. Defaults:
+6 failures, 10-minute window, 1-hour ban, management-port scope.
+-a means failures and -d means ban duration.
+All scope still uses SSH failures, then bans all incoming host protocols.
+.TP
+.B protect ssh status|disable
+Show or disable automatic protection.
+.TP
+.B protect ssh ignore add|delete CIDR
+Change ignored automatic-protection networks. Loopback is initially ignored.
+.PP
+The monitor uses applied policy during staging and pauses during pending
+confirmation. It is not a general service-log/HTTP detector.
+.TP
+.B ban IP [--for DURATION|permanent] [--scope all|ssh], unban IP, bans
+Manual single-address bans; default one hour/all incoming host protocols.
+Permanent bans have no native timeout. Unban clears manual/automatic
+entries and failure history. Manual bans are not suppressed by ignore lists.
+.SH NETWORK AND SYSTEM REPORTS
+.TP
+.B net [addresses|interfaces|routes|dns|listeners]
+Read-only current-namespace reports through native interfaces.
+DNS labels upstream information versus resolver/stub endpoints.
+Listeners covers listening TCP and bound UDP, without process attribution.
+.TP
+.B net route get ADDRESS
+Kernel lookup for a numeric destination.
+.TP
+.B net public-ip [--family 4|6] [--url HTTPS_URL]
+Explicit HTTPS lookup with TLS verification, response bounds and deadlines.
+No background public-IP lookup, redirects or environment proxies.
+.TP
+.B info, cpu, memory, disk, inode, os, hardware, time, timezone
+CPU/core samples, memory/swap, local filesystem capacity/inodes,
+OS/kernel/uptime, available hardware and local/UTC/timezone/sync reports.
+.SH LOGS AND UPDATES
+.TP
+.B logging packets off|low|medium|high
+Off by default. Low logs blocked traffic; medium adds accepted new
+traffic; high adds packet headers. Logging is rate-capped independently
+of unconditional packet verdicts.
+.TP
+.B logging level debug|info|notice|warning|error|critical
+Set the default logs-view severity cutoff; journal audit events remain recorded.
+.TP
+.B logs [--since DURATION] [--level SEVERITY] [--lines N] [--follow]
+Filtered journald view; defaults one hour/200 finite records.
+Journald owns rotation and retention. CM does not vacuum other services.
+.TP
+.B updates status|enable|disable|check|run|logs
+Owned unattended-upgrades policy and upstream execution.
+.TP
+.B updates reboot on|off, updates schedule HH:MM|default
+Automatic-reboot policy and daily apt-daily-upgrade timer drop-in.
+.SH OPTIONS
+.TP
+.B --dry-run
+Propose/validate without writes or application.
+.TP
+.B --stage
+Write desired rule/default/profile/alias/logging edits only; reload applies them.
+.TP
+.B --json
+Structured output for supported read commands; followed logs use JSON lines.
+.TP
+.B --root DIRECTORY
+Offline configuration workspace; never changes host firewall/services/APT.
+.TP
+.B --timeout SECONDS
+Confirmation deadline 1-3600 seconds, default 120. --rollback is a synonym.
+.TP
+.B --no-rollback
+Explicitly omit the confirmation timer.
+.TP
+.B --interval MS
+CPU sampling interval, 250-10000 milliseconds, default 1000.
+.PP
+Durations are integers with optional s/m/h/d suffixes. Bare integers
+mean seconds. Permanent is accepted for bans only.
+.SH FILES
+/etc/command-center/config.json
+.br
+/var/lib/command-center/{state,committed,applied,transaction,pending}.json
+.br
+/run/command-center/{active.json,lock,guard.lock}
+.br
+/etc/apt/apt.conf.d/90command-center
+.SH EXIT STATUS
+0 success; 1 operational/validation error; 2 invalid global usage;
+3 status/doctor health failure or drift. Error text goes to stderr.
+.SH DOCUMENTATION
+Complete command and operations guides are installed below
+/usr/share/doc/command-center. Source:
+https://github.com/The-Specter-X/command-center
+.SH SEE ALSO
+.BR nft (8),
+.BR systemctl (1),
+.BR journald.conf (5),
+.BR unattended-upgrade (8)

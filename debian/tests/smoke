@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+command-center version
+command-center info --json --interval 250 | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["cpus"] and d["memory"]["total_bytes"] > 0'
+

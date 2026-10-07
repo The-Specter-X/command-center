@@ -1,0 +1,31 @@
+Source: command-center
+Section: admin
+Priority: optional
+Maintainer: Command Center contributors <The-Specter-X@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), pkg-config, libnftables-dev (>= 1.0.9), libjson-c-dev (>= 0.15), libsystemd-dev (>= 247), libnl-route-3-dev, libcurl4-openssl-dev (>= 7.85), python3
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/The-Specter-X/command-center
+Vcs-Git: https://github.com/The-Specter-X/command-center.git
+Vcs-Browser: https://github.com/The-Specter-X/command-center
+
+Package: command-center
+Architecture: linux-any
+Depends: ${shlibs:Depends}, ${misc:Depends}, apt, unattended-upgrades, systemd, systemd-sysv, ca-certificates
+Recommends: nftables
+Description: native nftables host firewall and server administration CLI
+ Command Center manages a bounded IPv4/IPv6 host firewall using libnftables,
+ timed address bans, an optional OpenSSH journal guard, unattended-upgrades,
+ and one-shot CPU, memory, filesystem, and inode reporting.
+ .
+ It provides drift detection, atomic kernel rule updates, durable recovery,
+ and timed confirmation for live host-policy changes. The canonical command
+ is command-center; the optional shortcut package supplies cm.
+
+Package: command-center-shortcut
+Architecture: all
+Depends: ${misc:Depends}, command-center (= ${binary:Version})
+Conflicts: config-manager
+Description: optional cm command shortcut for Command Center
+ This package supplies /usr/bin/cm as a symlink to command-center.
+ It is separate to avoid requiring an already-used short command name.

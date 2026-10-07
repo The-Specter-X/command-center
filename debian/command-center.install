@@ -1,0 +1,6 @@
+usr/bin/command-center
+usr/share/man/man1/command-center.1
+usr/share/doc/command-center/*
+usr/lib/systemd/system/command-center.service
+usr/lib/systemd/system/command-center-guard.service
+

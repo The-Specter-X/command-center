@@ -1,0 +1,42 @@
+[Unit]
+Description=Command Center SSH authentication guard
+Documentation=man:command-center(1)
+Requires=command-center.service
+After=command-center.service systemd-journald.service
+PartOf=command-center.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecCondition=/usr/bin/command-center guard-check
+ExecStart=/usr/bin/command-center guard run
+Restart=on-failure
+RestartSec=5s
+User=root
+ConfigurationDirectory=command-center
+ConfigurationDirectoryMode=0700
+StateDirectory=command-center
+StateDirectoryMode=0700
+RuntimeDirectory=command-center
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+UMask=0077
+MemoryMax=256M
+
+[Install]
+WantedBy=command-center.service
+

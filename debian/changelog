@@ -1,0 +1,5 @@
+command-center (2.0.0) UNRELEASED; urgency=medium
+
+  * Complete passive-by-default host firewall and server administration redesign.
+
+ -- Command Center contributors <The-Specter-X@users.noreply.github.com>  Wed, 07 Oct 2026 14:00:00 +0000

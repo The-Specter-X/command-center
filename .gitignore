@@ -1,0 +1,14 @@
+/build/
+/artifacts/
+__pycache__/
+/debian/.debhelper/
+/debian/command-center/
+/debian/command-center-shortcut/
+/debian/files
+/debian/*.debhelper
+/debian/*.substvars
+/debian/debhelper-build-stamp
+*.deb
+*.buildinfo
+*.changes
+

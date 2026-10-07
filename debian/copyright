@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Command Center
+Source: https://github.com/The-Specter-X/command-center
+
+Files: *
+Copyright: 2026 Command Center contributors
+License: GPL-2.0-or-later
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 2 of the License, or
+ (at your option) any later version.
+ .
+ On Debian systems, the full text of version 2 of the GNU General
+ Public License is in /usr/share/common-licenses/GPL-2.
+

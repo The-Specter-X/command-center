@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+if [ "$1" = remove ] && [ -e /var/lib/command-center/pending.json ]; then
+    # Keep the executable and its recovery timer available if rollback fails.
+    /usr/bin/command-center rollback
+fi
+#DEBHELPER#
+

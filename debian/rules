@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+override_dh_auto_test:
+	dh_auto_test -- check
+
+# Keep Markdown relative links valid in the installed documentation tree.
+override_dh_compress:
+	dh_compress -X.md
+
+override_dh_installsystemd:
+	dh_installsystemd -pcommand-center --no-enable --no-start command-center.service
+	dh_installsystemd -pcommand-center --no-enable --no-start command-center-guard.service
+

@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+if [ "$1" = purge ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl stop command-center-rollback.timer command-center-rollback.service 2>/dev/null || true
+    fi
+    if [ -f /etc/apt/apt.conf.d/90command-center ] &&
+       head -n 1 /etc/apt/apt.conf.d/90command-center | grep -q '^// Managed by Command Center\.'; then
+        rm -f /etc/apt/apt.conf.d/90command-center
+    fi
+    timer=/etc/systemd/system/apt-daily-upgrade.timer.d/90-command-center.conf
+    if [ -f "$timer" ] && head -n 1 "$timer" | grep -q '^# Managed by Command Center\.'; then
+        rm -f "$timer"
+    fi
+    rm -f /etc/command-center/config.json
+    rm -f /var/lib/command-center/state.json /var/lib/command-center/committed.json
+    rm -f /var/lib/command-center/applied.json /var/lib/command-center/transaction.json /var/lib/command-center/pending.json
+    rm -f /run/command-center/active.json /run/command-center/lock /run/command-center/guard.lock
+    rmdir /run/command-center 2>/dev/null || true
+    rmdir /etc/command-center /var/lib/command-center 2>/dev/null || true
+    if [ -d /run/systemd/system ]; then systemctl daemon-reload 2>/dev/null || true; fi
+fi
+#DEBHELPER#

@@ -1,0 +1,39 @@
+[Unit]
+Description=Command Center host firewall
+Documentation=man:command-center(1)
+DefaultDependencies=no
+Wants=network-pre.target command-center-guard.service
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
+After=local-fs.target nftables.service ufw.service netfilter-persistent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/command-center apply
+ExecStop=/usr/bin/command-center suspend
+User=root
+ConfigurationDirectory=command-center
+ConfigurationDirectoryMode=0700
+StateDirectory=command-center
+StateDirectoryMode=0700
+RuntimeDirectory=command-center
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
