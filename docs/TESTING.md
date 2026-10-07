@@ -64,6 +64,6 @@ The GitHub workflow runs:
 
 Actions are pinned to inspected commit SHAs. Package artifacts include .deb, .buildinfo and .changes outputs. Test diagnostics retain the system journal on service failure.
 
-CI jobs have a 20-minute deadline. Direct dependency-install steps have an eight-minute deadline and use bounded network timeouts/retries so stalled package downloads cannot leave a check running indefinitely.
+CI jobs have a 20-minute deadline. Direct dependency-install steps have an eight-minute deadline and use bounded network timeouts/retries so stalled package downloads cannot leave a check running indefinitely. Ubuntu runners use the canonical HTTPS archive when their image supplies an APT mirror list.
 
 The workflow is a verification gate, not an automatic production deployment or a security certification. Add target-image testing for custom SSH builds, extra firewall owners, cloud networking and nonstandard server services.

@@ -49,6 +49,9 @@ jobs:
       - name: Dependencies
         timeout-minutes: 8
         run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y build-essential clang pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3
       - name: Sanitizers including leak detection
@@ -65,6 +68,9 @@ jobs:
       - name: Dependencies
         timeout-minutes: 8
         run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y build-essential pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3 iproute2 nftables
       - run: make -j2
