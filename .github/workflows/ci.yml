@@ -11,6 +11,7 @@ concurrency:
 jobs:
   debian:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -19,7 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Dependencies
-        run: apt-get update && apt-get install -y build-essential pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3 debhelper
+        timeout-minutes: 8
+        run: |
+          apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
+          apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y build-essential pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3 debhelper
       - name: Strict build and offline tests
         run: make -j2 all check
       - name: Build Debian packages
@@ -39,9 +43,14 @@ jobs:
             artifacts/*.changes
   analysis:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - run: sudo apt-get update && sudo apt-get install -y build-essential clang pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3
+      - name: Dependencies
+        timeout-minutes: 8
+        run: |
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y build-essential clang pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3
       - name: Sanitizers including leak detection
         run: make CC=clang sanitize
       - name: GCC analyzer
@@ -50,9 +59,14 @@ jobs:
         run: make clean && make CC=clang -j2 all check
   native:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3 iproute2 nftables
+      - name: Dependencies
+        timeout-minutes: 8
+        run: |
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y build-essential pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3 iproute2 nftables
       - run: make -j2
       - name: Private namespace packet tests
         run: sudo python3 tests/test_live.py ./build/command-center
@@ -60,6 +74,7 @@ jobs:
         run: python3 tests/test_network.py ./build/command-center
   systemd:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Build disposable Debian systemd image
