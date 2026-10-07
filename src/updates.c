@@ -137,7 +137,8 @@ static int schedule(const struct cm_paths *p, const char *value, bool dry, struc
     if (!r) {
         printf("Upgrade schedule: %s (system local time).\n",
                remove ? "distribution default" : value);
-        cm_log("upgrade schedule set to %s", value);
+        if (!p->offline)
+            cm_log("upgrade schedule set to %s", value);
     }
     return r;
 }
@@ -223,8 +224,9 @@ int cm_updates(const struct cm_paths *p, int argc, char **argv, bool dry, struct
     if (!r) {
         printf("Automatic upgrades: %s; automatic reboot: %s.\n", enabled ? "enabled" : "disabled",
                reboot ? "on" : "off");
-        cm_log("automatic update policy %s; automatic reboot %s", enabled ? "enabled" : "disabled",
-               reboot ? "on" : "off");
+        if (!p->offline)
+            cm_log("automatic update policy %s; automatic reboot %s", enabled ? "enabled" : "disabled",
+                   reboot ? "on" : "off");
     }
     return r;
 }

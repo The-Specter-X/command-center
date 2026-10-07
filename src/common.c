@@ -42,15 +42,30 @@ char *cm_strdup(const char *s)
     }
     return p;
 }
+static void journal_event(int priority, const char *component, const char *action, uint32_t rule,
+                          const char *address, const char *fmt, va_list ap)
+{
+    char message[2048];
+    vsnprintf(message, sizeof message, fmt, ap);
+    sd_journal_send("MESSAGE=%s", message, "PRIORITY=%d", priority,
+                    "SYSLOG_IDENTIFIER=command-center", "CM_COMPONENT=%s", component,
+                    "CM_ACTION=%s", action, "CM_RULE_ID=%u", rule,
+                    "CM_ADDRESS=%s", address ? address : "", NULL);
+}
+void cm_event(int priority, const char *component, const char *action, uint32_t rule,
+              const char *address, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    journal_event(priority, component, action, rule, address, fmt, ap);
+    va_end(ap);
+}
 void cm_log(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    char message[2048];
-    vsnprintf(message, sizeof message, fmt, ap);
+    journal_event(5, "administration", "event", 0, NULL, fmt, ap);
     va_end(ap);
-    sd_journal_send("MESSAGE=%s", message, "PRIORITY=5", "SYSLOG_IDENTIFIER=command-center",
-                    "CM_COMPONENT=administration", NULL);
 }
 bool cm_plain(const char *s, bool identifier)
 {
@@ -410,8 +425,10 @@ int cm_read_lock(const struct cm_paths *p, struct cm_error *e)
         return cm_fail(e, "unsafe read lock file");
     }
     if (flock(fd, LOCK_SH | LOCK_NB) < 0) {
+        int lock_errno = errno;
         close(fd);
-        return cm_fail(e, "another operation is in progress; retry for a consistent read");
+        cm_fail(e, "another operation is in progress; retry for a consistent read");
+        return lock_errno == EWOULDBLOCK || lock_errno == EAGAIN ? -3 : -1;
     }
     return fd;
 }

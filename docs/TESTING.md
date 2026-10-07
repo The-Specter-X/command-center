@@ -12,11 +12,11 @@ make clean
 make CC=clang -j2 all check
 ~~~
 
-The normal check target runs core C boundary tests and 29 offline CLI integration tests. It never changes host firewall, systemd or APT. Sanitizers include address/undefined behavior and leak checking when the environment permits leak scanning. GCC analysis compiles every implementation module with -fanalyzer.
+The normal check target runs core C boundary tests and 32 offline CLI integration tests. It never changes host firewall, systemd or APT. Sanitizers include address/undefined behavior and leak checking when the environment permits leak scanning. GCC analysis compiles every implementation module with -fanalyzer.
 
 Core tests cover numeric/network parsing, strict schemas, OpenSSH message parsing, failure windows, permanent/scoped bans, limits, native quoting, profile compilation, normalization and subprocess capture with closed standard descriptors.
 
-Offline tests cover defaults, stable numbering/order, filters/ranges, deduplication, aliases, lifecycle/boot separation, confirmation/deadlines, interrupted/reboot recovery, staging, missing/corrupt files, symlink/permission/duplicate-key rejection, lock contention, profiles, logging settings, updates/drop-ins and system reports.
+Offline tests cover defaults, stable numbering/order, filters/ranges, deduplication, aliases, lifecycle/boot separation, confirmation/deadlines, interrupted/reboot recovery, staging, missing/corrupt files, symlink/permission/duplicate-key rejection, missing checkpoint rejection, guard-condition lock contention, TCP alias validation, profiles, logging settings, updates/drop-ins and system reports.
 
 ## Read-only network checks
 
@@ -51,7 +51,7 @@ docker rm -f command-center-test
 
 Run this fixture only in the disposable container. It boots systemd in a separate namespace and installs locally built Debian packages. It checks disabled-on-install defaults, actual lifecycle/enablement, transient timer rollback, confirmation, guard readiness, one-reader enforcement, real failed SSH authentications, ban expiry, protection while staging, corrupted desired-file service restart, journal views, time/network reports, APT schedules, loader restart, reinstall/removal/purge and unrelated-file preservation.
 
-The container's SSH account/password are disposable fixtures, not deployment credentials. The packet test's internal apply/suspend commands are loader entry points; users should use start/stop.
+The fixture removes the Docker image's policy-rc.d inhibitor after image construction so package service actions operate under the running systemd. The container's SSH account/password are disposable fixtures, not deployment credentials. The packet test's internal apply/suspend commands are loader entry points; users should use start/stop.
 
 ## CI matrix
 

@@ -318,6 +318,44 @@ class CLI(unittest.TestCase):
         self.run_cm("config", "restore")
         self.assertEqual(self.config.read_bytes(), original)
 
+    def test_boot_refuses_missing_checkpoint_in_existing_installation(self):
+        self.run_cm("allow", "ssh")
+        self.run_cm("default", "in", "deny")
+        self.run_cm("start", "--no-rollback")
+        original = self.config.read_bytes()
+        checkpoint = self.state / "committed.json"
+        checkpoint.unlink()
+        self.run_cm("apply", ok=False)
+        self.assertEqual(self.config.read_bytes(), original)
+        self.assertFalse(checkpoint.exists())
+        self.assertTrue(json.loads((self.runtime / "active.json").read_text())["active"])
+
+    def test_protector_requires_a_tcp_ssh_alias(self):
+        self.run_cm("service", "set", "ssh", "22/udp")
+        original = self.config.read_bytes()
+        self.run_cm("protect", "ssh", ok=False)
+        self.assertEqual(self.config.read_bytes(), original)
+        self.run_cm("protect", "ssh", "--port", "2222/tcp")
+        self.assertEqual(self.cfg()["guard"]["ports"], [2222])
+
+    def test_guard_condition_waits_for_transient_lock_contention(self):
+        self.run_cm("use", "guard-only")
+        self.run_cm("start", "--no-rollback")
+        with (self.runtime / "lock").open("r+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            child = subprocess.Popen([BINARY, "--root", str(self.root), "guard-check"],
+                                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    child.wait(timeout=.15)
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                stdout, stderr = child.communicate(timeout=5)
+                self.assertEqual(child.returncode, 0, (stdout, stderr))
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=5)
+
     def test_strict_json_and_file_security(self):
         self.run_cm("init")
         valid = self.config.read_text()

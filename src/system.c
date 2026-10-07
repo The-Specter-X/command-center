@@ -259,6 +259,16 @@ int cm_logs(const struct cm_paths *p, int argc, char **argv, bool json, struct c
         json_object_object_add(v, "time_usec", json_object_new_uint64(timestamp));
         json_object_object_add(v, "priority", json_object_new_int(priority));
         json_object_object_add(v, "message", json_object_new_string(message));
+        const char *fields[] = {"CM_COMPONENT", "CM_ACTION", "CM_RULE_ID", "CM_ADDRESS"};
+        const char *keys[] = {"component", "action", "rule_id", "address"};
+        for (size_t i = 0; i < 4; i++) {
+            size_t prefix = strlen(fields[i]) + 1;
+            if (sd_journal_get_data(j, fields[i], &raw, &length) >= 0 &&
+                length > prefix && length - prefix <= 4096 &&
+                !memchr((const char *)raw + prefix, 0, length - prefix))
+                json_object_object_add(v, keys[i],
+                    json_object_new_string_len((const char *)raw + prefix, (int)(length - prefix)));
+        }
         free(message);
         if (follow) {
             if (json)

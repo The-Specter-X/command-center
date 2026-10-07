@@ -104,6 +104,10 @@ cm("protect", "ssh", "disable")
 assert run("systemctl", "is-active", "command-center-guard.service", expected=3).strip() == "inactive"
 logs = json.loads(cm("logs", "--json", "--lines", "50"))
 assert any("transaction committed" in r["message"] for r in logs)
+assert any(r.get("component") == "ssh" and r.get("address") == "127.0.0.1" for r in logs)
+cm("delete", "4294967294", expected=1)
+errors = json.loads(cm("logs", "--level", "error", "--json"))
+assert any(r.get("action") == "delete" and r["priority"] == 3 for r in errors)
 for name in ("time", "timezone", "os", "hardware"):
     assert isinstance(json.loads(cm(name, "--json")), dict)
 assert json.loads(cm("net", "route", "get", "127.0.0.1", "--json"))
@@ -126,9 +130,13 @@ assert json.loads(cm("status", "--json"))["active"]
 assert json.loads(cm("status", "--json"))["boot_startup"] == "enabled"
 run("systemctl", "restart", "command-center.service")
 assert json.loads(cm("status", "--json"))["policy_table_present"]
+before_upgrade = json.loads(run("nft", "--json", "list", "table", "inet", "command_center"))
 run("apt-get", "install", "--reinstall", "-y",
     "/command-center_2.0.0_amd64.deb", "/command-center-shortcut_2.0.0_all.deb")
 assert config.read_bytes() == saved
+after_upgrade = json.loads(run("nft", "--json", "list", "table", "inet", "command_center"))
+table_handle = lambda rules: next(x["table"]["handle"] for x in rules["nftables"] if "table" in x)
+assert table_handle(before_upgrade) == table_handle(after_upgrade), "Package upgrade replaced live firewall."
 # --no-start packaging never starts a previously inactive service.
 cm("start")
 assert json.loads(cm("status", "--json"))["policy_table_present"]
@@ -139,6 +147,9 @@ unrelated.write_text("keep this file\n")
 run("apt-get", "remove", "-y", "command-center", "command-center-shortcut")
 assert not Path("/var/lib/command-center/pending.json").exists()
 assert not json.loads(Path("/var/lib/command-center/committed.json").read_text())["active"]
+remaining_tables = json.loads(run("nft", "--json", "list", "tables"))["nftables"]
+assert not any(x.get("table", {}).get("name") in ("command_center", "command_center_bans")
+               for x in remaining_tables)
 assert json.loads(run("nft", "--json", "list", "table", "inet", "administrator"))
 run("apt-get", "purge", "-y", "command-center")
 assert unrelated.read_text() == "keep this file\n"

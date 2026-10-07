@@ -69,6 +69,8 @@ Guard ban commits use the applied configuration and preserve desired-file edits.
 
 Boot replay is idempotent: its source is the committed checkpoint. Volatile activation absence identifies a new boot before recovery writes any runtime marker. Unconfirmed changes are rolled back before replay.
 
+If the checkpoint is missing while existing configuration, state, kernel snapshots or activation markers remain, boot refuses passive initialization. A protector ExecCondition briefly waits for lock contention; an operational error exits 255 so systemd can retry instead of treating the protector as disabled.
+
 The kernel/files/systemd manager cannot share one physical transaction. A service-control failure after a successful policy commit is reported as an error, and status exposes the applied policy and failed/missing service. Recovery/rollback and service retry remain explicit operational tools.
 
 ## Authentication input boundary

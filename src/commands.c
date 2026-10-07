@@ -325,7 +325,9 @@ int cm_protect(struct cm_config *c, struct cm_state *s, int argc, char **argv, s
     if (!c->guard_enabled) {
         uint16_t port;
         char proto[5];
-        if (!(seen & 16) && !cm_service_config(c, "ssh", &port, proto, e)) {
+        if (!(seen & 16)) {
+            if (cm_service_config(c, "ssh", &port, proto, e) || strcmp(proto, "tcp"))
+                return cm_fail(e, "SSH alias must be TCP; set a TCP alias or explicit --port");
             c->guard_ports[0] = port;
             c->guard_port_count = 1;
         }

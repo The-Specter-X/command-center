@@ -196,7 +196,18 @@ s.close()
         # Log throttling must never turn a blocked verdict into an accept.
         cm("logging", "packets", "high")
         cm("check")
-        for _ in range(14):
+        burst_code = """
+import socket
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+s.settimeout(.4)
+for _ in range(100):s.sendto(b'ok',('192.0.2.1',8053))
+try:
+ data,peer=s.recvfrom(1024)
+ raise AssertionError('A blocked packet passed after the logging quota was exhausted')
+except socket.timeout:pass
+"""
+        run("ip", "netns", "exec", "cm-test-client", sys.executable, "-c", burst_code)
+        for _ in range(3):
             connect("192.0.2.1", 8001, allowed=False)
         cm("ban", "192.0.2.2", "--for", "permanent", "--scope", "ssh")
         connect("192.0.2.1", allowed=False)

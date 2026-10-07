@@ -85,7 +85,7 @@ static int start(const struct cm_paths *p, const struct cm_options *opt, struct 
     if (!opt->dry_run && cm_prepare(p, e))
         return -1;
     int lock = opt->dry_run ? cm_read_lock(p, e) : cm_lock(p, e);
-    if (lock == -1 || (!opt->dry_run && lock < 0))
+    if (lock == -1 || lock < -2 || (!opt->dry_run && lock < 0))
         return -1;
     struct cm_config *c = cm_alloc(sizeof *c);
     struct cm_state *s = cm_alloc(sizeof *s);
@@ -111,6 +111,8 @@ static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_sta
 {
     bool mutate = false;
     int r = 0;
+    uint32_t audit_rule = 0;
+    char audit_address[CM_ADDRESS_MAX] = {0};
     if (!strcmp(cmd, "rules") && !n)
         cm_rules(c, json);
     else if (!strcmp(cmd, "bans") && !n)
@@ -167,6 +169,8 @@ static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_sta
         r = cm_uint(v[0], 1, UINT32_MAX - 1, &id, e);
         if (!r)
             r = cm_rule_delete(c, (uint32_t)id, e);
+        if (!r)
+            audit_rule = (uint32_t)id;
         mutate = true;
     } else if (!strcmp(cmd, "move") && n == 3 && !strcmp(v[1], "before")) {
         uint64_t id, before;
@@ -175,6 +179,8 @@ static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_sta
                 : 0;
         if (!r)
             r = cm_rule_move(c, (uint32_t)id, (uint32_t)before, e);
+        if (!r)
+            audit_rule = (uint32_t)id;
         mutate = true;
     } else if (!strcmp(cmd, "default") && n == 2) {
         if (strcmp(v[0], "in") && strcmp(v[0], "out"))
@@ -270,11 +276,14 @@ static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_sta
         if (!r)
             r = cm_state_ban_scoped(s, ip, duration ? cm_now() + duration : INT64_MAX, false, all,
                                     e);
+        if (!r)
+            strcpy(audit_address, ip);
         mutate = true;
     } else if (!strcmp(cmd, "unban") && n == 1) {
         char ip[CM_ADDRESS_MAX];
         r = cm_address(v[0], false, ip, sizeof ip, e);
         if (!r) {
+            strcpy(audit_address, ip);
             size_t at = 0;
             for (size_t i = 0; i < s->ban_count; i++)
                 if (strcmp(s->bans[i].address, ip))
@@ -311,6 +320,9 @@ static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_sta
         return cm_fail(e, "unknown command or invalid arguments; use cm help");
     if (!r && mutate)
         r = cm_transaction(p, c, s, opt, false, e);
+    if (!r && mutate && !p->offline && !opt->dry_run)
+        cm_event(5, opt->stage ? "configuration" : "firewall", cmd, audit_rule, audit_address,
+                  "%s %s", cmd, opt->stage ? "staged" : "committed");
     return r;
 }
 int main(int argc, char **argv)
@@ -324,6 +336,7 @@ int main(int argc, char **argv)
     bool json = false, now = false;
     unsigned interval = 1000;
     const char *root = NULL;
+    const char *command_name = NULL;
     char **args = cm_alloc((size_t)(argc + 1) * sizeof *args);
     int count = 0, result = 0, lock = -1;
     for (int i = 1; i < argc; i++) {
@@ -366,6 +379,7 @@ int main(int argc, char **argv)
         goto done;
     }
     const char *cmd = args[0];
+    command_name = cmd;
     int n = count - 1;
     char **v = args + 1;
     if (!strcmp(cmd, "help") || !strcmp(cmd, "--help") || !strcmp(cmd, "-h")) {
@@ -499,8 +513,15 @@ int main(int argc, char **argv)
         lock = cm_lock(&p, &e);
     } else
         lock = cm_read_lock(&p, &e);
-    if (lock == -1 || (!readonly && !opt.dry_run && lock < 0))
+    /* A busy ExecCondition must not silently skip an enabled protector. */
+    if (!strcmp(cmd, "guard-check"))
+        for (unsigned i = 0; lock == -3 && i < 100; i++) {
+            usleep(50000);
+            lock = cm_read_lock(&p, &e);
+        }
+    if (lock == -1 || lock < -2 || (!readonly && !opt.dry_run && lock < 0))
         goto failed;
+    e.text[0] = 0;
     if (!strcmp(cmd, "apply") || !strcmp(cmd, "suspend")) {
         if (n || opt.dry_run)
             goto usage;
@@ -593,7 +614,12 @@ done:
     return result;
 failed:
     fprintf(stderr, "command-center: %s\n", *e.text ? e.text : "operation failed");
-    result = 1;
+    if (!root && geteuid() == 0)
+        cm_event(3, "cli", command_name ? command_name : "parse", 0, NULL,
+                  "%s failed: %s", command_name ? command_name : "parse",
+                  *e.text ? e.text : "operation failed");
+    /* ExecCondition 1 means disabled; an operational error must fail/retry the unit. */
+    result = command_name && !strcmp(command_name, "guard-check") ? 255 : 1;
     goto done;
 usage:
     fprintf(stderr, "command-center: %s\n", *e.text ? e.text : "invalid arguments; use cm help");

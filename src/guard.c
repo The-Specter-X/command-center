@@ -133,7 +133,8 @@ static int seek(sd_journal *j, struct cm_state *s, struct cm_error *e)
             return cm_fail(e, "journal next: %s", strerror(-r));
         if (r > 0 && sd_journal_test_cursor(j, s->cursor) > 0)
             return 0;
-        cm_log("saved SSH journal cursor unavailable; starting at current journal tail");
+        cm_event(4, "ssh", "cursor-gap", 0, NULL,
+                  "saved SSH journal cursor unavailable; starting at current journal tail");
     }
     int r = sd_journal_seek_tail(j);
     if (r < 0)
@@ -248,7 +249,8 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
                         }
                         if (banned) {
                             new_ban = true;
-                            cm_log("SSH authentication threshold reached for %s", ip);
+                            cm_event(5, "ssh", "threshold", 0, ip,
+                                      "SSH authentication threshold reached for %s", ip);
                         }
                     }
                 }

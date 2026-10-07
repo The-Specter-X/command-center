@@ -10,7 +10,7 @@ During implementation:
 | --- | --- |
 | Strict GCC C17 build with conversion/shadow/format warnings as errors | Passed |
 | C core boundary/parser/compiler tests | Passed |
-| 29 offline CLI integration tests | Passed |
+| 32 offline CLI integration tests | Passed |
 | GCC -fanalyzer build | Passed |
 | Address/undefined sanitizer run, local leak scanning disabled | Passed |
 | Local native Netlink/kernel packet/systemd checks | Blocked by workspace capabilities |

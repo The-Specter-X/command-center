@@ -55,6 +55,7 @@ CM reserves its two table names. Do not use those names for another application.
 | Desired settings were edited outside CM | Validate/check, then explicit reload |
 | Desired file is malformed and should be discarded | Config restore |
 | Established configuration/state files are missing or invalid | Resolve existing intent/pending records, then recover checkpoint |
+| The committed checkpoint is missing | Restore a trusted backup; boot refuses to initialize an existing installation as passive |
 | Managed kernel structure was edited/flushed | Inspect status, then reload |
 | Protector is unhealthy after policy committed | Inspect logs/service diagnostics; retry protection or restart the guard |
 | CM should stop this boot but resume next boot | Stop |
@@ -106,6 +107,8 @@ CM refuses an owned update/drop-in file that was changed outside its expected fo
 ## Backups and removal
 
 Back up /etc/command-center and /var/lib/command-center with root-only access while no mutation is running. The latter contains source addresses, attempt history and journal cursor data. It can be sensitive operational information.
+
+Package upgrades preserve the running kernel policy and do not restart the oneshot loader. A running protector is restarted with the new executable; inactive services stay inactive. Package service actions respect Debian's policy-rc.d. Stop CM explicitly before removal if administrator policy inhibits service actions.
 
 Removal first resolves a pending rollback, then stops the loader/monitor and removes only CM enforcement. Configuration/state remain for reinstallation. Purge removes known CM data and owned APT/timer files, while preserving unrelated files in the same directory.
 

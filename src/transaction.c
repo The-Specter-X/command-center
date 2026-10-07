@@ -162,7 +162,8 @@ int cm_recover(const struct cm_paths *p, struct cm_error *e)
     if (!r)
         r = cm_remove(p->state, "transaction.json", e);
     if (!r) {
-        cm_log("recovered interrupted transaction to previous configuration");
+        if (!p->offline)
+            cm_log("recovered interrupted transaction to previous configuration");
         fputs("Recovered the previous configuration.\n", stdout);
     }
     return r;
@@ -314,8 +315,9 @@ int cm_transaction(const struct cm_paths *p, const struct cm_config *c, const st
             printf("Change pending: confirm from a new connection within %u seconds using "
                    "'command-center confirm'.\n",
                    opt->rollback);
-        cm_log("configuration/state transaction committed%s",
-               guarded ? "; confirmation pending" : "");
+        if (!p->offline)
+            cm_log("configuration/state transaction committed%s",
+                   guarded ? "; confirmation pending" : "");
     }
     json_object_put(prior);
     free(script);
@@ -355,9 +357,10 @@ int cm_confirm(const struct cm_paths *p, struct cm_error *e)
     if (cm_remove(p->state, "pending.json", e))
         return -1;
     struct cm_error cleanup;
-    if (stop_timer(p, &cleanup))
+    if (stop_timer(p, &cleanup) && !p->offline)
         cm_log("change confirmed; transient timer cleanup failed: %s", cleanup.text);
-    cm_log("firewall change confirmed");
+    if (!p->offline)
+        cm_log("firewall change confirmed");
     puts("Change confirmed.");
     return 0;
 }
@@ -383,7 +386,8 @@ int cm_rollback(const struct cm_paths *p, struct cm_error *e)
     if (!r) {
         struct cm_error ignored;
         stop_timer(p, &ignored);
-        cm_log("pending firewall change rolled back");
+        if (!p->offline)
+            cm_log("pending firewall change rolled back");
         puts("Previous configuration restored.");
     }
     return r;
@@ -428,9 +432,15 @@ int cm_apply(const struct cm_paths *p, struct cm_error *e)
     r = cm_read_json(p->state, "committed.json", &record, e);
     bool fresh = r == 1;
     if (r == 1) {
-        cm_config_default(c);
-        memset(s, 0, sizeof *s);
-        r = 0;
+        if (cm_exists(p->config, "config.json") || cm_exists(p->state, "state.json") ||
+            cm_exists(p->state, "applied.json") || cm_exists(p->run, "active.json"))
+            r = cm_fail(e, "committed checkpoint is missing; refusing passive initialization "
+                           "of an existing installation; restore a backup");
+        else {
+            cm_config_default(c);
+            memset(s, 0, sizeof *s);
+            r = 0;
+        }
     } else if (!r) {
         r = cm_bundle_parse(record, c, s, e);
         json_object_put(record);
@@ -443,7 +453,8 @@ int cm_apply(const struct cm_paths *p, struct cm_error *e)
         if (cm_state_load(p, current, e)) {
             state_failed = true;
             strcpy(state_error, e->text);
-            cm_log("boot uses checkpoint bans because current state is invalid: %s", state_error);
+            if (!p->offline)
+                cm_log("boot uses checkpoint bans because current state is invalid: %s", state_error);
         } else
             *s = *current;
         free(current);
@@ -491,7 +502,7 @@ int cm_apply(const struct cm_paths *p, struct cm_error *e)
     }
     free(c);
     free(s);
-    if (!r)
+    if (!r && !p->offline)
         cm_log("last committed firewall policy loaded");
     if (!r && state_failed)
         return cm_fail(
@@ -525,7 +536,8 @@ int cm_restore_checkpoint(const struct cm_paths *p, struct cm_error *e)
         r = cm_remove(p->state, "transaction.json", e);
     if (!r) {
         puts("Committed configuration and state checkpoint restored.");
-        cm_log("explicit committed checkpoint recovery completed");
+        if (!p->offline)
+            cm_log("explicit committed checkpoint recovery completed");
     }
     return r;
 }

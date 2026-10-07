@@ -89,7 +89,7 @@ char *cm_firewall_script(const struct cm_config *c, const struct cm_state *s, bo
             if (c->packet_log)
                 fprintf(f,
                         " limit rate 5/second burst 10 packets log prefix \"CM-REJECT \" "
-                        "level warning%s\n",
+                        "level warn%s\n",
                         c->packet_log == 3 ? " flags all" : "");
             fputs(" meta l4proto tcp counter reject with tcp reset\n"
                   " counter reject with icmpx type port-unreachable\n }\n",
@@ -100,7 +100,7 @@ char *cm_firewall_script(const struct cm_config *c, const struct cm_state *s, bo
             fprintf(
                 f,
                 " chain log_drop { limit rate 5/second burst 10 packets log prefix \"CM-DROP \" "
-                "level warning%s\n counter drop\n }\n",
+                "level warn%s\n counter drop\n }\n",
                 flags);
             if (c->packet_log >= 2)
                 fprintf(f,
@@ -199,7 +199,7 @@ char *cm_firewall_script(const struct cm_config *c, const struct cm_state *s, bo
         if (c->packet_log)
             fprintf(f,
                     " chain log_ban { limit rate 5/second burst 10 packets log prefix \"CM-BAN \" "
-                    "level warning%s\n counter drop\n }\n",
+                    "level warn%s\n counter drop\n }\n",
                     c->packet_log == 3 ? " flags all" : "");
         const char *names[] = {"manual_all4", "manual_all6", "manual_ssh4", "manual_ssh6",
                                "auto_all4",   "auto_all6",   "auto_ssh4",   "auto_ssh6"};

@@ -81,6 +81,8 @@ int cm_fail(struct cm_error *, const char *, ...) __attribute__((format(printf, 
 void *cm_alloc(size_t);
 char *cm_strdup(const char *);
 void cm_log(const char *, ...) __attribute__((format(printf, 1, 2)));
+void cm_event(int, const char *, const char *, uint32_t, const char *, const char *, ...)
+    __attribute__((format(printf, 6, 7)));
 int cm_uint(const char *, uint64_t, uint64_t, uint64_t *, struct cm_error *);
 uint64_t cm_now(void);
 int cm_address(const char *, bool, char *, size_t, struct cm_error *);

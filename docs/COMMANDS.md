@@ -251,6 +251,8 @@ Packet mode defaults to off. Low logs blocked/rejected/banned traffic; medium al
 
 Administration events go to journald under command-center. Logging level controls the default severity cutoff of the logs view (initially info); administration/security events remain recorded.
 
+Journal events include component/action fields and applicable rule/address fields. Operational failures are recorded at error severity; unavailable SSH cursors are warnings. The logs view includes these fields when present.
+
 Logs defaults to the last hour and at most 200 matching records in a finite view. Lines is 1–10000 and applies to finite views. Follow streams matching records from the requested since window and then new events. JSON follow uses one object per line. Kernel records must have a CM prefix; administrative records must have a trusted root UID.
 
 Journald owns retention and rotation. CM does not delete other services' journal data; see the operations guide for an optional system-wide retention policy.
