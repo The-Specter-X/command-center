@@ -191,13 +191,18 @@ CPU sampling interval, 250-10000 milliseconds, default 1000.
 Durations are integers with optional s/m/h/d suffixes. Bare integers
 mean seconds. Permanent is accepted for bans only.
 .SH FILES
+.nf
 /etc/command-center/config.json
-.br
-/var/lib/command-center/{state,committed,applied,transaction,pending}.json
-.br
-/run/command-center/{active.json,lock,guard.lock}
-.br
+/var/lib/command-center/state.json
+/var/lib/command-center/committed.json
+/var/lib/command-center/applied.json
+/var/lib/command-center/transaction.json
+/var/lib/command-center/pending.json
+/run/command-center/active.json
+/run/command-center/lock
+/run/command-center/guard.lock
 /etc/apt/apt.conf.d/90command-center
+.fi
 .SH EXIT STATUS
 0 success; 1 operational/validation error; 2 invalid global usage;
 3 status/doctor health failure or drift. Error text goes to stderr.

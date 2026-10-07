@@ -4,5 +4,10 @@ if [ "$1" = remove ] && [ -e /var/lib/command-center/pending.json ]; then
     # Keep the executable and its recovery timer available if rollback fails.
     /usr/bin/command-center rollback
 fi
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    # --no-start also suppresses debhelper's removal-stop snippet.
+    # Stop while ExecStop's executable is still installed; honor policy-rc.d.
+    deb-systemd-invoke stop command-center-guard.service command-center.service
+fi
 #DEBHELPER#
 

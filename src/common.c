@@ -42,6 +42,7 @@ char *cm_strdup(const char *s)
     }
     return p;
 }
+__attribute__((format(printf, 6, 0)))
 static void journal_event(int priority, const char *component, const char *action, uint32_t rule,
                           const char *address, const char *fmt, va_list ap)
 {

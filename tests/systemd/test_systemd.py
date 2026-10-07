@@ -20,7 +20,8 @@ def cm(*args, expected=0, guarded=False):
     while True:
         argv = ["/usr/bin/command-center", *([] if guarded else ["--no-rollback"]), *args]
         r = subprocess.run(argv, text=True, capture_output=True, timeout=45)
-        if r.returncode == 1 and "operation is in progress" in r.stderr and time.monotonic() < deadline:
+        if (expected == 0 and r.returncode == 1 and "operation is in progress" in r.stderr
+                and time.monotonic() < deadline):
             time.sleep(.05)
             continue
         assert r.returncode == expected, (args, r.returncode, r.stdout, r.stderr)
@@ -49,6 +50,15 @@ def failures():
 def automatic_ban():
     return any(b["automatic"] and b["address"] == "127.0.0.1"
                for b in json.loads(cm("bans", "--json")))
+
+
+def reinstall():
+    run("apt-get", "install", "--reinstall", "-y",
+        "/command-center_2.0.0_amd64.deb", "/command-center-shortcut_2.0.0_all.deb")
+
+
+def table_handle(rules):
+    return next(x["table"]["handle"] for x in rules["nftables"] if "table" in x)
 
 
 wait_for(lambda: Path("/run/systemd/private").exists(), seconds=30)
@@ -96,6 +106,18 @@ config.write_text("{bad desired file")
 run("systemctl", "restart", "command-center-guard.service")
 assert run("systemctl", "is-active", "command-center-guard.service").strip() == "active"
 cm("config", "restore")
+# Upgrade the active protector without replacing the loader's kernel policy.
+guard_pid = run("systemctl", "show", "command-center-guard.service", "--property=MainPID", "--value")
+saved_config = config.read_bytes()
+before_upgrade = json.loads(run("nft", "--json", "list", "table", "inet", "command_center"))
+reinstall()
+assert run("systemctl", "is-active", "command-center-guard.service").strip() == "active"
+assert int(guard_pid) > 0
+new_guard_pid = run("systemctl", "show", "command-center-guard.service", "--property=MainPID", "--value")
+assert int(new_guard_pid) > 0 and new_guard_pid != guard_pid
+assert config.read_bytes() == saved_config
+after_upgrade = json.loads(run("nft", "--json", "list", "table", "inet", "command_center"))
+assert table_handle(before_upgrade) == table_handle(after_upgrade), "Upgrade replaced live firewall."
 # A timed rollback must restart a protector that the pending policy stopped.
 cm("protect", "ssh", "disable", "--timeout", "3", guarded=True)
 wait_for(lambda: not Path("/var/lib/command-center/pending.json").exists())
@@ -125,19 +147,21 @@ saved = config.read_bytes()
 cm("stop")
 assert not json.loads(cm("status", "--json"))["active"]
 assert json.loads(run("nft", "--json", "list", "table", "inet", "administrator"))
+reinstall()
+assert not json.loads(cm("status", "--json"))["active"]
+assert run("systemctl", "is-active", "command-center.service", expected=3).strip() == "inactive"
+assert run("systemctl", "is-active", "command-center-guard.service", expected=3).strip() == "inactive"
 cm("enable", "--now")
 assert json.loads(cm("status", "--json"))["active"]
 assert json.loads(cm("status", "--json"))["boot_startup"] == "enabled"
 run("systemctl", "restart", "command-center.service")
 assert json.loads(cm("status", "--json"))["policy_table_present"]
 before_upgrade = json.loads(run("nft", "--json", "list", "table", "inet", "command_center"))
-run("apt-get", "install", "--reinstall", "-y",
-    "/command-center_2.0.0_amd64.deb", "/command-center-shortcut_2.0.0_all.deb")
+reinstall()
 assert config.read_bytes() == saved
 after_upgrade = json.loads(run("nft", "--json", "list", "table", "inet", "command_center"))
-table_handle = lambda rules: next(x["table"]["handle"] for x in rules["nftables"] if "table" in x)
 assert table_handle(before_upgrade) == table_handle(after_upgrade), "Package upgrade replaced live firewall."
-# --no-start packaging never starts a previously inactive service.
+assert run("systemctl", "is-active", "command-center-guard.service", expected=3).strip() == "inactive"
 cm("start")
 assert json.loads(cm("status", "--json"))["policy_table_present"]
 cm("default", "out", "deny", "--timeout", "120", guarded=True)

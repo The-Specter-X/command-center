@@ -49,7 +49,7 @@ docker exec command-center-test journalctl --no-pager -n 250
 docker rm -f command-center-test
 ~~~
 
-Run this fixture only in the disposable container. It boots systemd in a separate namespace and installs locally built Debian packages. It checks disabled-on-install defaults, actual lifecycle/enablement, transient timer rollback, confirmation, guard readiness, one-reader enforcement, real failed SSH authentications, ban expiry, protection while staging, corrupted desired-file service restart, journal views, time/network reports, APT schedules, loader restart, reinstall/removal/purge and unrelated-file preservation.
+Run this fixture only in the disposable container. It boots systemd in a separate namespace and installs locally built Debian packages. It checks disabled-on-install defaults, actual lifecycle/enablement, transient timer rollback, confirmation, guard readiness, one-reader enforcement, real failed SSH authentications, ban expiry, protection while staging, corrupted desired-file service restart, journal views, time/network reports, APT schedules, loader restart, active-protector upgrade, inactive-service reinstall, preserved kernel policy on upgrade, removal/purge and unrelated-file preservation.
 
 The fixture removes the Docker image's policy-rc.d inhibitor after image construction so package service actions operate under the running systemd. The container's SSH account/password are disposable fixtures, not deployment credentials. The packet test's internal apply/suspend commands are loader entry points; users should use start/stop.
 

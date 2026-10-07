@@ -13,5 +13,5 @@ override_dh_compress:
 
 override_dh_installsystemd:
 	dh_installsystemd -pcommand-center --no-enable --no-start --no-stop-on-upgrade command-center.service
-	dh_installsystemd -pcommand-center --no-enable --no-start command-center-guard.service
+	dh_installsystemd -pcommand-center --no-enable --no-start --restart-after-upgrade command-center-guard.service
 
