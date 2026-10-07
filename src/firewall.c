@@ -50,10 +50,11 @@ static void verdict(FILE *f, enum cm_kind kind, unsigned logging)
 static void plumbing(FILE *f, bool out)
 {
     fprintf(f, "  %s \"lo\" accept comment \"cm:loopback\"\n", out ? "oifname" : "iifname");
-    fputs("  meta l4proto icmp icmp type { destination-unreachable, time-exceeded, "
+    /* Numeric ICMP protocol IDs do not depend on /etc/protocols or NSS. */
+    fputs("  meta l4proto 1 icmp type { destination-unreachable, time-exceeded, "
           "parameter-problem } accept\n",
           f);
-    fputs("  meta l4proto ipv6-icmp icmpv6 type { destination-unreachable, packet-too-big, "
+    fputs("  meta l4proto 58 icmpv6 type { destination-unreachable, packet-too-big, "
           "time-exceeded, parameter-problem, nd-router-solicit, nd-router-advert, "
           "nd-neighbor-solicit, nd-neighbor-advert } accept\n",
           f);

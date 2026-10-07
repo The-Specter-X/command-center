@@ -259,7 +259,8 @@ static int public_ip(int argc, char **argv, struct json_object **out, struct cm_
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_PROXY, "");
-    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, family == 4 ? CURL_IPRESOLVE_V4 : CURL_IPRESOLVE_V6);
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE,
+                     (long)(family == 4 ? CURL_IPRESOLVE_V4 : CURL_IPRESOLVE_V6));
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, receive);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "command-center/" CM_VERSION);
