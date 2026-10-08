@@ -107,6 +107,42 @@ static void membership(void)
     free(s);
     free(next);
 }
+static double full_membership(void)
+{
+    struct cm_config *c = cm_alloc(sizeof *c);
+    struct cm_state *s = cm_alloc(sizeof *s);
+    struct cm_error e = {0};
+    cm_config_default(c);
+    c->enabled = true;
+    s->ban_count = CM_MAX_BANS;
+    char *table = NULL;
+    size_t length;
+    FILE *stream = open_memstream(&table, &length);
+    assert(stream);
+    fputs("{\"nftables\":[{\"set\":{\"name\":\"manual_all4\",\"elem\":[", stream);
+    for (size_t i = 0; i < s->ban_count; i++) {
+        struct cm_ban *b = &s->bans[i];
+        snprintf(b->address, sizeof b->address, "10.64.%zu.%zu", i / 256, i % 256);
+        b->expires = INT64_MAX;
+        b->all_ports = true;
+        fprintf(stream, "%s\"%s\"", i ? "," : "", b->address);
+    }
+    fputs("]}}]}", stream);
+    assert(!fclose(stream));
+    ban_table = table;
+    struct timespec start, end;
+    assert(!clock_gettime(CLOCK_MONOTONIC, &start));
+    assert(!cm_ban_drift(c, s, &e));
+    assert(!clock_gettime(CLOCK_MONOTONIC, &end));
+    s->bans[CM_MAX_BANS / 2].all_ports = false;
+    assert(cm_ban_drift(c, s, &e) == 1);
+    double ms = (double)(end.tv_sec - start.tv_sec) * 1000.0 +
+        (double)(end.tv_nsec - start.tv_nsec) / 1000000.0;
+    free(table);
+    free(c);
+    free(s);
+    return ms;
+}
 int main(void)
 {
     make_inventory();
@@ -126,10 +162,12 @@ int main(void)
     assert(!strstr(text, "elem") && !strstr(text, "handle") && !strstr(text, "count"));
     json_object_put(snapshot);
     membership();
+    double full_ms = full_membership();
     double ms = (double)(end.tv_sec - start.tv_sec) * 1000.0 +
         (double)(end.tv_nsec - start.tv_nsec) / 1000000.0;
     printf("{\"schema\":1,\"simulated_foreign_tables\":10000,\"snapshot_queries\":3,"
-           "\"snapshot_objects\":2,\"snapshot_ms\":%.3f,\"membership_and_delta_tests\":\"passed\"}\n", ms);
+           "\"snapshot_objects\":2,\"snapshot_ms\":%.3f,\"full_ban_membership_ms\":%.3f,"
+           "\"membership_and_delta_tests\":\"passed\"}\n", ms, full_ms);
     free(inventory);
     return 0;
 }

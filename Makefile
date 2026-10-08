@@ -37,7 +37,8 @@ fuzz:
 	$(MAKE) CC=clang BUILD_DIR=build/fuzz CFLAGS='-O1 -g -std=c17 -Wall -Wextra -Werror -fno-omit-frame-pointer -fsanitize=fuzzer-no-link,address,undefined' LDFLAGS='-fsanitize=fuzzer,address,undefined' build/fuzz/fuzz-core
 fuzz-smoke: all fuzz
 	python3 tests/fuzz_seed.py ./$(BUILD_DIR)/command-center build/fuzz/corpus
-	./build/fuzz/fuzz-core -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=8192 build/fuzz/corpus
+	mkdir -p artifacts
+	./build/fuzz/fuzz-core -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=8192 -artifact_prefix=artifacts/fuzz- build/fuzz/corpus
 check-load: $(BUILD_DIR)/test-load
 	./$(BUILD_DIR)/test-load
 check: $(BUILD_DIR)/command-center $(BUILD_DIR)/test-core $(BUILD_DIR)/test-faults $(BUILD_DIR)/test-fuzz-smoke $(BUILD_DIR)/test-kernel

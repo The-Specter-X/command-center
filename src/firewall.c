@@ -451,6 +451,18 @@ char *cm_ban_delta(const struct cm_config *c, const struct cm_state *old, const 
     }
     return buf;
 }
+struct ban_reference {
+    const char *address;
+    size_t index;
+    unsigned set;
+};
+static int compare_ban_reference(const void *a, const void *b)
+{
+    const struct ban_reference *left = a, *right = b;
+    if (left->set != right->set)
+        return left->set < right->set ? -1 : 1;
+    return strcmp(left->address, right->address);
+}
 int cm_ban_drift(const struct cm_config *c, const struct cm_state *s, struct cm_error *e)
 {
     bool policy, bans;
@@ -468,6 +480,12 @@ int cm_ban_drift(const struct cm_config *c, const struct cm_state *s, struct cm_
         return -1;
     const char *names[] = {"manual_all4", "manual_all6", "manual_ssh4", "manual_ssh6",
                           "auto_all4", "auto_all6", "auto_ssh4", "auto_ssh6"};
+    struct ban_reference *references = cm_alloc((s->ban_count + 1) * sizeof *references);
+    size_t count = 0;
+    for (size_t i = 0; i < s->ban_count; i++)
+        if (enforced(c, &s->bans[i], now))
+            references[count++] = (struct ban_reference){s->bans[i].address, i, ban_set(&s->bans[i])};
+    qsort(references, count, sizeof *references, compare_ban_reference);
     bool seen[CM_MAX_BANS] = {0};
     int drift = 0;
     for (size_t i = 0; i < json_object_array_length(list) && !drift; i++) {
@@ -503,16 +521,18 @@ int cm_ban_drift(const struct cm_config *c, const struct cm_state *s, struct cm_
             }
             if (expires && json_object_get_uint64(expires) <= 2)
                 continue; /* Natural expiry can race state collection by two seconds. */
-            size_t at = 0;
-            while (at < s->ban_count && !(enforced(c, &s->bans[at], now) &&
-                ban_set(&s->bans[at]) == k && named(set, "name", names[k]) &&
-                json_object_is_type(value, json_type_string) &&
-                !strcmp(s->bans[at].address, json_object_get_string(value))))
-                at++;
-            if (at == s->ban_count) {
+            if (!json_object_is_type(value, json_type_string)) {
                 drift = 1;
                 break;
             }
+            struct ban_reference key = {json_object_get_string(value), 0, k};
+            const struct ban_reference *found = bsearch(&key, references, count,
+                                                       sizeof *references, compare_ban_reference);
+            if (!found || seen[found->index]) {
+                drift = 1;
+                break;
+            }
+            size_t at = found->index;
             seen[at] = true;
             bool timed = timeout && json_object_get_uint64(timeout) != 0;
             if (timed == (s->bans[at].expires == INT64_MAX)) {
@@ -530,9 +550,10 @@ int cm_ban_drift(const struct cm_config *c, const struct cm_state *s, struct cm_
             }
         }
     }
-    for (size_t i = 0; i < s->ban_count; i++)
-        if (enforced(c, &s->bans[i], now) && s->bans[i].expires > now + 2 && !seen[i])
+    for (size_t i = 0; i < count; i++)
+        if (s->bans[references[i].index].expires > now + 2 && !seen[references[i].index])
             drift = 1;
+    free(references);
     json_object_put(list);
     return drift;
 }

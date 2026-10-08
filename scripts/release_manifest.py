@@ -10,7 +10,16 @@ import sys
 
 
 def capture(*args):
-    return subprocess.run(args, check=True, text=True, capture_output=True).stdout.strip()
+    result = subprocess.run(args, text=True, capture_output=True)
+    if result.returncode:
+        sys.stderr.write(result.stderr)
+        result.check_returncode()
+    return result.stdout.strip()
+
+
+def git(*args):
+    root = Path(__file__).resolve().parents[1]
+    return capture("git", "-c", f"safe.directory={root}", "-C", str(root), *args)
 
 
 output = Path(sys.argv[1] if len(sys.argv) > 1 else "artifacts")
@@ -25,9 +34,9 @@ for package in sorted(output.glob("*.deb")):
 inventory = capture("dpkg-query", "-W", "-f=${binary:Package}\t${Version}\t${Architecture}\n")
 (output / "installed-packages.tsv").write_text(inventory + "\n")
 modules = ("libnftables", "json-c", "libsystemd", "libnl-route-3.0", "libcurl")
-manifest = {"schema": 1, "source_sha": os.environ.get("GITHUB_SHA") or capture("git", "rev-parse", "HEAD"),
+manifest = {"schema": 1, "source_sha": os.environ.get("GITHUB_SHA") or git("rev-parse", "HEAD"),
             "source_head_sha": os.environ.get("SOURCE_HEAD_SHA"),
-            "source_tracked_changes": bool(capture("git", "diff", "--name-only", "HEAD")),
+            "source_tracked_changes": bool(git("diff", "--name-only", "HEAD")),
             "run_id": os.environ.get("GITHUB_RUN_ID"), "kernel": platform.release(),
             "os_release": Path("/etc/os-release").read_text(),
             "compiler": capture("cc", "--version").splitlines()[0],

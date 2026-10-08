@@ -43,7 +43,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             if (!state)
                 memset(s, 0, sizeof *s);
             char *script = cm_firewall_script(c, s, true, true, true);
-            assert(strlen(script) < CM_MAX_FILE && !strstr(script, "flush ruleset"));
+            assert(strlen(script) < CM_MAX_FILE && strncmp(script, "flush ruleset", 13) &&
+                   !strstr(script, "\nflush ruleset"));
             free(script);
         }
         if (state) {

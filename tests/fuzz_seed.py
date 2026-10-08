@@ -11,7 +11,7 @@ corpus.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix="cm-fuzz-seed-") as root:
     def cm(*args):
         subprocess.run([str(binary), "--root", root, *args], check=True, capture_output=True)
-    cm("allow", "ssh", "--comment", 'quoted "comment"')
+    cm("allow", "ssh", "--comment", 'quoted "comment" mentions flush ruleset')
     cm("limit", "https", "--rate", "7/hour", "--burst", "10")
     cm("ban", "2001:db8::a", "--for", "10m", "--scope", "ssh")
     config = (Path(root) / "etc/command-center/config.json").read_bytes()

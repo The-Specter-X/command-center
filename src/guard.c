@@ -348,6 +348,9 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
             sd_notify(0, "READY=1");
             ready = true;
         }
+        /* Unmatched journal traffic also wakes the reader. Leave a control-lock
+         * admission window between batches rather than immediately reacquiring. */
+        usleep(20000);
         if (entries <= 128) {
             r = sd_journal_wait(journal, 1000000);
             if (r < 0 && r != -EINTR) {

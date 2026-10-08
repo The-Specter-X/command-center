@@ -7,7 +7,7 @@ tables, Debian/systemd lifecycle and the existing host-firewall scope remain.
 
 | Finding | Result | Regression evidence |
 | --- | --- | --- |
-| R1: fatal guard saturation/replay | Nonfatal bounded admission, preserved bans/successful work/cursor; capacity/drop telemetry | Core full-store/100-timestamp tests; real SSH with both stores full |
+| R1: fatal guard saturation/replay | Nonfatal bounded admission, preserved bans/successful work/cursor; indexed membership checks, control-lock admission windows and capacity/drop telemetry | Core full-store/100-timestamp tests; real SSH with both stores full |
 | R2: updates hold firewall lock | Package/log execution has no firewall/lifecycle lock; owned update edits use updates.lock; controlled helpers have deadlines | Offline barrier plus actual timed rollback/SSH commits during a slow package check |
 | R3: missing activation becomes stop | Current-boot unknown activation refuses edits/confirmation; boot identity distinguishes stopped startup | Offline/native missing-marker and previous-boot cases |
 | R4: premature meter expiry | Full-refill horizon plus margin; total declared entry budget | Arithmetic/budget bounds; burst depletion/idle raw SYN counts for IPv4/IPv6 input/output |

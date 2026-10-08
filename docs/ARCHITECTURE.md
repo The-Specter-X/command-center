@@ -84,6 +84,12 @@ Only trusted root OpenSSH journal matches are counted. Journal matching combines
 
 The guard persists a journal cursor and bounded timestamps. It counts recent failures, skips obsolete/future records, detects unavailable cursors, ignores configured networks, and avoids double-counting already banned sources. A single lifetime reader prevents duplicate consumers.
 
+Each batch processes at most 128 journal entries and leaves a 20 ms control-lock
+admission window after releasing the lock. Owned ban membership uses a sorted
+index of eligible state entries, avoiding repeated full-store scans. Unmatched
+journal traffic can wake the reader but cannot keep it in a lock-reacquisition
+loop without that admission window.
+
 Saturation is a nonfatal admission result. Successful decisions and cursor progress are persisted even when another event is declined; no permanent ban is evicted. Runtime health records heartbeat, last progress/event, lag, backlog, pause, capacity and processed/dropped counters since the daemon started. Status checks record validity/freshness (ten seconds), lag versus the configured window, expected bans, activation/table/loader consistency and the pending deadline.
 
 The detector is specifically an OpenSSH detector. Different service log formats require a separately designed/tested source; an arbitrary regex or untrusted application message is not accepted as a ban instruction.

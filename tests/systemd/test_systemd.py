@@ -23,7 +23,7 @@ def cm(*args, expected=0, guarded=False):
     while True:
         argv = ["/usr/bin/command-center", *([] if guarded else ["--no-rollback"]), *args]
         r = subprocess.run(argv, text=True, capture_output=True, timeout=45)
-        if (expected == 0 and r.returncode == 1 and "operation is in progress" in r.stderr
+        if (expected in (0, 3) and r.returncode == 1 and "operation is in progress" in r.stderr
                 and time.monotonic() < deadline):
             time.sleep(.05)
             continue
