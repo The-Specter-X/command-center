@@ -11,7 +11,7 @@ RUN cd /src && dpkg-buildpackage -us -uc -b && \
     test ! -L /etc/systemd/system/multi-user.target.wants/command-center-guard.service && \
     systemctl enable ssh.service && \
     useradd -m cmtest && echo 'cmtest:correct-test-password' | chpasswd && \
-    printf 'Port 2222\nPasswordAuthentication yes\nUsePAM no\nPermitRootLogin no\n' > /etc/ssh/sshd_config.d/90-cm-test.conf && \
+    printf 'Port 2222\nPasswordAuthentication yes\nUsePAM no\nPermitRootLogin no\nPerSourcePenalties no\n' > /etc/ssh/sshd_config.d/90-cm-test.conf && \
     rm -f /usr/sbin/policy-rc.d
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

@@ -46,8 +46,10 @@ int __wrap_nft_run_cmd_from_buffer(struct nft_ctx *ctx, const char *command)
         output = "{\"nftables\":[{\"table\":{\"family\":\"inet\",\"name\":\"command_center\",\"handle\":8}}]}";
     else if (!strcmp(command, "list table inet " CM_BAN_TABLE "\n"))
         output = ban_table;
-    else
-        assert(!"Hot path attempted an unexpected or whole-ruleset query");
+    else {
+        fputs("Hot path attempted an unexpected or whole-ruleset query\n", stderr);
+        abort();
+    }
     return 0;
 }
 const char *__wrap_nft_ctx_get_output_buffer(struct nft_ctx *ctx)

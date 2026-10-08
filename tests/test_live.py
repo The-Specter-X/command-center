@@ -103,7 +103,7 @@ s.close()
         return next(x["table"]["handle"] for x in snapshot("command_center_bans") if "table" in x)
 
     raw_syn = r"""
-import socket,struct,sys
+import errno,socket,struct,sys
 src,dst,port,offset=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
 family=socket.AF_INET6 if ':' in src else socket.AF_INET
 s=socket.socket(family,socket.SOCK_RAW,socket.IPPROTO_TCP)
@@ -115,7 +115,10 @@ for i in range(10):
  total=sum(words)
  while total>>16:total=(total&65535)+(total>>16)
  tcp=tcp[:16]+struct.pack('!H',(~total)&65535)+tcp[18:]
- s.sendto(tcp,(dst,0))
+ try:s.sendto(tcp,(dst,0))
+ except OSError as error:
+  if error.errno!=errno.EPERM:raise
+  # A local OUTPUT drop returns EPERM; its gate counter is still the evidence.
 """
 
     def syn_burst(src, dst, port, offset, outbound):

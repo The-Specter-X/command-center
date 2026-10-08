@@ -21,12 +21,12 @@ jobs:
         image: ['debian:13', 'debian:testing']
     container: ${{ matrix.image }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Dependencies
         timeout-minutes: 8
         run: |
           apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
-          apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y build-essential pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3 debhelper
+          apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y build-essential pkg-config libnftables-dev libjson-c-dev libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3 debhelper git ca-certificates
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Strict build and offline tests
         run: python3 scripts/record_check.py artifacts/offline-tests.log make -j2 all check
       - name: Bounded-load evidence
