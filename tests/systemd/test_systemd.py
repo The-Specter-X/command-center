@@ -208,9 +208,13 @@ for first, second in (("disable", "enable"), ("enable", "disable")):
 cm("protect", "ssh", "--port", "2222/tcp")
 # A failed service job leaves a recoverable committed policy, and reload retries it.
 run("systemctl", "stop", "command-center-guard.service")
-failed_job = subprocess.run(["/src/build/test-faults", "--no-rollback", "protect", "ssh", "--port", "2222/tcp"],
-    env={**os.environ, "CM_TEST_FAIL_GUARD": "start"}, capture_output=True, text=True, timeout=15)
-assert failed_job.returncode == 1 and "service job failure" in failed_job.stderr, failed_job
+run("systemctl", "mask", "--runtime", "command-center-guard.service")
+try:
+    failed_job = subprocess.run(["/usr/bin/command-center", "--no-rollback", "protect", "ssh", "--port", "2222/tcp"],
+        capture_output=True, text=True, timeout=15)
+    assert failed_job.returncode == 1 and "masked" in failed_job.stderr, failed_job
+finally:
+    run("systemctl", "unmask", "--runtime", "command-center-guard.service")
 assert json.loads(cm("status", "--json", expected=3))["guard_applied_enabled"]
 cm("reload")
 assert unit_active("command-center-guard.service")

@@ -20,8 +20,6 @@ int __real_cm_exec(const char *, char *const[], struct cm_error *);
 int __wrap_cm_exec(const char *, char *const[], struct cm_error *);
 int __real_cm_updates(const struct cm_paths *, int, char **, bool, struct cm_error *);
 int __wrap_cm_updates(const struct cm_paths *, int, char **, bool, struct cm_error *);
-int __real_cm_systemd(const char *, bool, struct cm_error *);
-int __wrap_cm_systemd(const char *, bool, struct cm_error *);
 int __real_cm_reconcile_guard(const struct cm_paths *, struct cm_error *);
 int __wrap_cm_reconcile_guard(const struct cm_paths *, struct cm_error *);
 
@@ -113,14 +111,6 @@ int __wrap_cm_updates(const struct cm_paths *p, int argc, char **argv, bool dry,
     if (getenv("CM_TEST_PACKAGE_BARRIER"))
         selected.offline = false;
     return __real_cm_updates(&selected, argc, argv, dry, e);
-}
-int __wrap_cm_systemd(const char *action, bool guard, struct cm_error *e)
-{
-    if (guard && matches("CM_TEST_HOLD_GUARD", action) && barrier(e))
-        return -1;
-    if (guard && matches("CM_TEST_FAIL_GUARD", action))
-        return cm_fail(e, "injected guard service job failure");
-    return __real_cm_systemd(action, guard, e);
 }
 int __wrap_cm_reconcile_guard(const struct cm_paths *p, struct cm_error *e)
 {

@@ -24,7 +24,7 @@ $(BUILD_DIR)/command-center: $(OBJECTS) $(BUILD_DIR)/main.o
 $(BUILD_DIR)/test-core: tests/test_core.c $(OBJECTS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 $(BUILD_DIR)/test-faults: tests/faults.c $(OBJECTS) $(BUILD_DIR)/main.o
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -Wl,--wrap=cm_write_json,--wrap=renameat,--wrap=fsync,--wrap=fopen,--wrap=cm_exec,--wrap=cm_updates,--wrap=cm_systemd,--wrap=cm_reconcile_guard -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -Wl,--wrap=cm_write_json,--wrap=renameat,--wrap=fsync,--wrap=fopen,--wrap=cm_exec,--wrap=cm_updates,--wrap=cm_reconcile_guard -o $@
 $(BUILD_DIR)/test-load: tests/test_load.c $(OBJECTS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 $(BUILD_DIR)/test-kernel: tests/test_kernel.c $(OBJECTS)
