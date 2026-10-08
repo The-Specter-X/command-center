@@ -16,12 +16,13 @@
 | info.c | Procfs/sysfs/statvfs and time/OS/hardware reporting |
 | updates.c | Owned APT policy and timer drop-in; upstream update execution |
 | status.c | Desired/applied health, service state and numbered rule report |
+| plan.c | Semantic change classification and readable desired/applied plan |
 
 The main implementation is C. It never invokes a shell for user commands or network inspection. Subprocess boundaries are used for systemd transient rollback timers and Debian's package-update tools, with fixed executable paths, validated arguments, an explicit environment, checked statuses, and bounded captured output.
 
 ## nftables ownership and interaction
 
-CM reserves two inet-family names: command_center and command_center_bans. Policy rebuilds delete/recreate only these names in a native atomic batch. A ban-only update recreates the ban table and preserves the policy table.
+CM reserves two inet-family names: command_center and command_center_bans. Policy rebuilds delete/recreate only affected owned objects in a native atomic batch. Consistent ban-only updates use atomic element deltas, with a ban-table rebuild fallback. Metadata-only changes and unchanged reloads preserve policy meters. Native snapshots inspect owned tables; foreign-chain inventory is kept in status.
 
 There is no built-in set of three nftables tables that CM should share. Tables are named ownership containers; hooks/chain priorities determine packet evaluation. Sharing another owner's table would couple rule order, cleanup and upgrade behavior to that owner.
 
@@ -52,6 +53,8 @@ Isolation omits general established/related acceptance. Reply-direction TCP from
 
 Mutations hold an exclusive nonblocking application lock. Reads hold a shared lock when an established lock file exists. Contention is an explicit error; readers do not observe a partial multi-file transaction.
 
+Administrative commands hold a separate lifecycle lock through the post-commit systemd job. The global lock is released before service conditions need it; reconciliation re-reads the latest committed intent. Loader/guard unit helpers do not take the lifecycle lock. Package execution and log display hold neither firewall nor lifecycle locks. Owned APT/timer edits use an independent updates lock. CM-controlled systemctl/systemd-run/journalctl helpers have a 30-second deadline; package processes retain upstream cancellation/locking behavior.
+
 For a normal mutation:
 
 1. Read/strictly validate desired settings, current state and committed checkpoint.
@@ -67,17 +70,21 @@ Persistence failure triggers best-effort restoration from the durable record. Un
 
 Guard ban commits use the applied configuration and preserve desired-file edits. A preservation flag in their recovery intent prevents a crash recovery from discarding staged configuration.
 
-Boot replay is idempotent: its source is the committed checkpoint. Volatile activation absence identifies a new boot before recovery writes any runtime marker. Unconfirmed changes are rolled back before replay.
+Boot replay is idempotent: its source is the committed checkpoint. Runtime/checkpoint boot IDs distinguish previous-boot inactivity from a missing marker in the current boot. Unconfirmed changes are rolled back before boot replay. Loader apply also writes durable intent before native changes and persistence.
 
 If the checkpoint is missing while existing configuration, state, kernel snapshots or activation markers remain, boot refuses passive initialization. A protector ExecCondition briefly waits for lock contention; an operational error exits 255 so systemd can retry instead of treating the protector as disabled.
 
 The kernel/files/systemd manager cannot share one physical transaction. A service-control failure after a successful policy commit is reported as an error, and status exposes the applied policy and failed/missing service. Recovery/rollback and service retry remain explicit operational tools.
+
+If startup installs checkpoint policy but current state is invalid, the loader reports degraded state while leaving protective policy loaded. systemd does not execute ExecStop for a failed start. Explicit stop and package removal therefore perform independent CM cleanup, verify owned table absence and preserve recovery evidence on failure. Removal aborts if this cannot be completed while the executable is installed.
 
 ## Authentication input boundary
 
 Only trusted root OpenSSH journal matches are counted. Journal matching combines trusted UID and ssh/sshd units with known sshd/sshd-session identifiers. The parser checks the complete supported failed-authentication format and a numeric source address/port. It selects the final source delimiter so a crafted username cannot substitute an earlier apparent address.
 
 The guard persists a journal cursor and bounded timestamps. It counts recent failures, skips obsolete/future records, detects unavailable cursors, ignores configured networks, and avoids double-counting already banned sources. A single lifetime reader prevents duplicate consumers.
+
+Saturation is a nonfatal admission result. Successful decisions and cursor progress are persisted even when another event is declined; no permanent ban is evicted. Runtime health records heartbeat, last progress/event, lag, backlog, pause, capacity and processed/dropped counters since the daemon started. Status checks record validity/freshness (ten seconds), lag versus the configured window, expected bans, activation/table/loader consistency and the pending deadline.
 
 The detector is specifically an OpenSSH detector. Different service log formats require a separately designed/tested source; an arbitrary regex or untrusted application message is not accepted as a ban instruction.
 
@@ -95,7 +102,7 @@ Network inventory uses libnl route APIs and bounded procfs socket records. DNS i
 
 System metrics are read from kernel files and statvfs. Optional hardware/time synchronization values can be absent. Native AF values and counters are reported without inventing a generalized cross-platform API.
 
-Update operations retain APT's locks, origins, package policy and unattended-upgrades behavior. CM edits only files marked as its own. APT/timer rollback restores a previous owned fragment if reloading the upstream service fails.
+Update operations retain APT's locks, origins, package policy and unattended-upgrades behavior. CM requires the complete generated APT/timer form to match before replacing/removing it; a retained ownership header alone is insufficient. Purge preserves edited fragments. APT/timer rollback restores a previous owned fragment if reloading the upstream service fails.
 
 ## Limits of assurance
 

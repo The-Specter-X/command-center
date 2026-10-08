@@ -99,6 +99,36 @@ s.close()
     def handle():
         return next(x["table"]["handle"] for x in snapshot("command_center") if "table" in x)
 
+    def ban_handle():
+        return next(x["table"]["handle"] for x in snapshot("command_center_bans") if "table" in x)
+
+    raw_syn = r"""
+import socket,struct,sys
+src,dst,port,offset=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
+family=socket.AF_INET6 if ':' in src else socket.AF_INET
+s=socket.socket(family,socket.SOCK_RAW,socket.IPPROTO_TCP)
+for i in range(10):
+ tcp=struct.pack('!HHLLBBHHH',41000+offset+i,port,i+1,0,5<<4,2,65535,0,0)
+ addresses=socket.inet_pton(family,src)+socket.inet_pton(family,dst)
+ pseudo=addresses+(struct.pack('!I3xB',len(tcp),6) if family==socket.AF_INET6 else struct.pack('!BBH',0,6,len(tcp)))
+ words=struct.unpack('!%dH'%((len(pseudo)+len(tcp))//2),pseudo+tcp)
+ total=sum(words)
+ while total>>16:total=(total&65535)+(total>>16)
+ tcp=tcp[:16]+struct.pack('!H',(~total)&65535)+tcp[18:]
+ s.sendto(tcp,(dst,0))
+"""
+
+    def syn_burst(src, dst, port, offset, outbound):
+        prefix = [] if outbound else ["ip", "netns", "exec", "cm-test-client"]
+        run(*prefix, sys.executable, "-c", raw_syn, src, dst, str(port), str(offset))
+        time.sleep(.1)
+
+    def dropped(rule_id, family):
+        return sum(expr["counter"]["packets"]
+                   for obj in snapshot("command_center")
+                   if obj.get("rule", {}).get("chain") == f"gate{family}_{rule_id}"
+                   for expr in obj["rule"]["expr"] if "counter" in expr)
+
     foreign = """table inet untouched {
  chain input { type filter hook input priority 10; policy accept; tcp dport 9000 drop; }
  chain forward { type filter hook forward priority 0; policy accept; }
@@ -140,6 +170,35 @@ s.close()
         old_handle = handle()
         cm("ban", "203.0.113.8", "--for", "permanent")
         assert handle() == old_handle, "Ban reconciliation reset connection meters."
+        old_ban_handle = ban_handle()
+        cm("ban", "203.0.113.9", "--for", "10m", "--scope", "ssh")
+        assert ban_handle() == old_ban_handle, "Single-ban update rebuilt the ban table."
+        cm("ban", "203.0.113.9", "--for", "20m", "--scope", "all")
+        cm("unban", "203.0.113.9")
+        assert ban_handle() == old_ban_handle, "Ban refresh/rescope/removal rebuilt the ban table."
+        cm("service", "set", "unused", "12345/tcp")
+        cm("logging", "level", "warning")
+        cm("service", "set", "unused", "12346/tcp", "--stage")
+        # This fixture has no systemd: an unchanged guard requires no service job.
+        cm("reload")
+        assert handle() == old_handle
+        assert not Path("/var/lib/command-center/pending.json").exists()
+        connect("192.0.2.1", allowed=False)
+        connect("2001:db8:1::1", allowed=False)
+        run("nft", "delete", "element", "inet", "command_center_bans", "manual_all4", "{", "203.0.113.8", "}")
+        assert json.loads(cm("status", "--json", expected=3))["ban_membership_drift"]
+        cm("reload")
+        assert handle() == old_handle
+        assert not json.loads(cm("status", "--json"))["ban_membership_drift"]
+        run("nft", "add", "chain", "inet", "command_center_bans", "unexpected")
+        assert json.loads(cm("status", "--json", expected=3))["kernel_drift"]
+        cm("reload")
+        assert handle() == old_handle, "Repairing ban structure reset connection meters."
+        Path("/run/command-center/active.json").unlink()
+        assert not json.loads(cm("status", "--json", expected=3))["activation_known"]
+        cm("allow", "9002/tcp", expected=1)
+        assert handle() == old_handle
+        cm("apply")
         cm("delete", "4")
         connect("192.0.2.1")
         cm("service", "set", "testdns", "8053/both")
@@ -176,6 +235,22 @@ s.close()
         connect("2001:db8:1::2", 9443, outbound=True)
         persistent = socket.create_connection(("192.0.2.2", 9443), timeout=1)
         assert persistent.recv(2) == b"ok"
+        # Deplete a large bucket, idle beyond the old 2s expiry, then measure earned tokens.
+        for outbound, port in ((False, 8000), (True, 9443)):
+            cm("limit", *(["out"] if outbound else []), f"{port}/tcp", "--rate", "1/second", "--burst", "10")
+            rule_id = json.loads(cm("rules", "--json"))[-1]["id"]
+            endpoints = ((4, "192.0.2.1", "192.0.2.2"), (6, "2001:db8:1::1", "2001:db8:1::2"))
+            for family, server, client in endpoints:
+                src, dst = (server, client) if outbound else (client, server)
+                syn_burst(src, dst, port, 0, outbound)
+                assert dropped(rule_id, family) == 0, "Initial burst was not available."
+            time.sleep(3.2)
+            for family, server, client in endpoints:
+                src, dst = (server, client) if outbound else (client, server)
+                syn_burst(src, dst, port, 100, outbound)
+                count = dropped(rule_id, family)
+                assert 4 <= count <= 8, ("Bucket reset before replenishment", outbound, family, count)
+            cm("delete", str(rule_id))
         # Compile isolation via its preview, disabling its journal daemon in this no-systemd fixture.
         isolation = json.loads(cm("profile", "show", "isolation", "--ssh-port", "8000/tcp", "--json"))
         isolation["guard"]["enabled"] = False
@@ -213,6 +288,18 @@ except socket.timeout:pass
         connect("192.0.2.1", allowed=False)
         cm("unban", "192.0.2.2")
         connect("192.0.2.1")
+        # A previous boot with startup disabled has no active policy and permits saved edits.
+        checkpoint = Path("/var/lib/command-center/committed.json")
+        prior = json.loads(checkpoint.read_text())
+        prior["boot_id"] = "previous-boot"
+        checkpoint.write_text(json.dumps(prior))
+        Path("/run/command-center/active.json").unlink()
+        run("nft", "delete", "table", "inet", "command_center")
+        run("nft", "delete", "table", "inet", "command_center_bans")
+        assert not json.loads(cm("status", "--json"))["active"]
+        cm("allow", "9002/tcp")
+        assert not json.loads(cm("status", "--json"))["policy_table_present"]
+        cm("apply")
         cm("suspend")
         assert not json.loads(cm("status", "--json"))["policy_table_present"]
         assert snapshot("untouched")

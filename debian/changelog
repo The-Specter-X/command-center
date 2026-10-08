@@ -1,3 +1,14 @@
+command-center (2.1.0) UNRELEASED; urgency=high
+
+  * Preserve protection under saturation, interrupted persistence, missing runtime
+    activation and failed startup; serialize lifecycle intent through service jobs.
+  * Keep rollback available during updates; fix meter refill horizons, metadata
+    rebuilds, edited timer conflicts, CPU isolation, port overrides and comments.
+  * Add health/ban reconciliation, policy plans, bounded meter capacities, native
+    element deltas, failure/fuzz/load tests and retained release provenance.
+
+ -- Command Center contributors <The-Specter-X@users.noreply.github.com>  Thu, 08 Oct 2026 14:00:00 +0000
+
 command-center (2.0.0) UNRELEASED; urgency=medium
 
   * Complete passive-by-default host firewall and server administration redesign.

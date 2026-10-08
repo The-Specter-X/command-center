@@ -18,6 +18,7 @@ static void string(struct json_object *o, const char *k, const char *s)
 void cm_config_default(struct cm_config *c)
 {
     memset(c, 0, sizeof *c);
+    c->activation_known = true;
     c->next_id = 1;
     c->log_level = 6;
     strcpy(c->profile, "passive");
@@ -105,6 +106,7 @@ int cm_config_parse(struct json_object *o, struct cm_config *c, struct cm_error 
                                        "log_level",  "profile",     "aliases",   NULL};
     uint64_t n;
     memset(c, 0, sizeof *c);
+    c->activation_known = true;
     if (!cm_keys(o, keys, e) || cm_get_int(o, "schema", 2, 2, &n, e) ||
         cm_get_int(o, "next_id", 1, UINT32_MAX, &n, e))
         return -1;
@@ -297,15 +299,96 @@ int cm_config_load(const struct cm_paths *p, struct cm_config *c, struct cm_erro
     r = cm_config_parse(o, c, e);
     json_object_put(o);
     if (!r) {
-        struct json_object *active = NULL;
-        int found = cm_read_json(p->run, "active.json", &active, e);
+        r = cm_activation(p, &c->enabled, &c->activation_known, e);
+    }
+    return r;
+}
+int cm_boot_id(const struct cm_paths *p, char *out, size_t cap, struct cm_error *e)
+{
+    if (p->offline) {
+        if (cap < sizeof "offline")
+            return cm_fail(e, "boot identity buffer too small");
+        strcpy(out, "offline");
+        return 0;
+    }
+    FILE *f = fopen("/proc/sys/kernel/random/boot_id", "re");
+    if (!f)
+        return cm_fail(e, "cannot read current boot identity");
+    bool valid = fgets(out, (int)cap, f) != NULL;
+    fclose(f);
+    if (!valid)
+        return cm_fail(e, "cannot read current boot identity");
+    out[strcspn(out, "\r\n")] = 0;
+    return strlen(out) == 36 && cm_plain(out, false) ? 0
+        : cm_fail(e, "invalid current boot identity");
+}
+int cm_activation(const struct cm_paths *p, bool *enabled, bool *known, struct cm_error *e)
+{
+    *enabled = false;
+    *known = true;
+    struct json_object *o = NULL, *id = NULL;
+    int found = cm_read_json(p->run, "active.json", &o, e);
+    if (found < 0)
+        return -1;
+    bool marker = found == 0;
+    if (!marker) {
+        found = cm_read_json(p->state, "committed.json", &o, e);
+        if (found == 1)
+            return 0;
         if (found < 0)
             return -1;
-        if (!found) {
-            r = cm_get_bool(active, "active", &c->enabled, e);
-            json_object_put(active);
+    }
+    static const char *const keys[] = {"active", "boot_id", NULL};
+    int r = marker && !cm_keys(o, keys, e) ? -1 : cm_get_bool(o, "active", enabled, e);
+    if (!r && json_object_object_get_ex(o, "boot_id", &id)) {
+        char current[64], saved[64];
+        r = cm_get_string(o, "boot_id", saved, sizeof saved, e) ||
+            cm_boot_id(p, current, sizeof current, e) ? -1 : 0;
+        if (!r && !*saved)
+            r = cm_fail(e, "invalid activation boot identity");
+        if (!r && strcmp(current, saved)) {
+            *enabled = false; /* Explicitly inactive in a different boot. */
+            if (!p->offline) {
+                struct json_object *snapshot = NULL;
+                bool policy, bans;
+                size_t foreign;
+                r = cm_kernel_snapshot(&snapshot, &policy, &bans, &foreign, e);
+                if (!r) {
+                    *known = !policy && !bans;
+                    *enabled = !*known; /* Old boot evidence cannot explain current enforcement. */
+                    json_object_put(snapshot);
+                }
+            }
+        } else if (!r && !marker && *enabled)
+            *known = false;
+    } else if (!r && !marker && *enabled) {
+        if (p->offline)
+            *known = false;
+        else {
+            struct json_object *snapshot = NULL;
+            bool policy, bans;
+            size_t foreign;
+            r = cm_kernel_snapshot(&snapshot, &policy, &bans, &foreign, e);
+            if (!r) {
+                *known = !policy && !bans;
+                *enabled = !*known;
+                json_object_put(snapshot);
+            }
         }
     }
+    json_object_put(o);
+    return r;
+}
+int cm_activation_save(const struct cm_paths *p, bool enabled, struct cm_error *e)
+{
+    char id[64];
+    if (cm_boot_id(p, id, sizeof id, e))
+        return -1;
+    struct json_object *o = json_object_new_object();
+    json_object_object_add(o, "active", json_object_new_boolean(enabled));
+    json_object_object_add(o, "boot_id", json_object_new_string(id));
+    int r = cm_write_json(p->run, "active.json", o, e);
+    json_object_put(o);
     return r;
 }
 struct json_object *cm_state_json(const struct cm_state *s)

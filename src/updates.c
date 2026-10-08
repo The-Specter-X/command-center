@@ -65,6 +65,13 @@ static int status(struct cm_error *e)
          "other APT fragments");
     return 0;
 }
+static void timer_fragment(char *text, size_t cap, unsigned hour, unsigned minute)
+{
+    snprintf(text, cap,
+             "# Managed by Command Center.\n[Timer]\nOnCalendar=\nOnCalendar=*-*-* "
+             "%02u:%02u:00\nRandomizedDelaySec=0\nAccuracySec=1min\nPersistent=true\n",
+             hour, minute);
+}
 static int schedule(const struct cm_paths *p, const char *value, bool dry, struct cm_error *e)
 {
     unsigned hour = 0, minute = 0;
@@ -85,21 +92,27 @@ static int schedule(const struct cm_paths *p, const char *value, bool dry, struc
                      (int)root, p->config);
     if (n < 0 || (size_t)n >= sizeof dir)
         return cm_fail(e, "schedule path too long");
-    const char *file = "90-command-center.conf", *marker = "# Managed by Command Center.\n";
+    const char *file = "90-command-center.conf";
     char *prior = NULL;
     int r = cm_read_text(dir, file, &prior, e);
     if (r < 0)
         return -1;
-    if (prior && strncmp(prior, marker, strlen(marker))) {
-        free(prior);
-        return cm_fail(e, "timer drop-in belongs to another administrator; refusing to replace it");
+    if (prior) {
+        unsigned h = 24, m = 60;
+        const char *clock = strstr(prior, "OnCalendar=*-*-* ");
+        char expected[512];
+        bool valid = clock && sscanf(clock, "OnCalendar=*-*-* %2u:%2u:00", &h, &m) == 2 &&
+                     h < 24 && m < 60;
+        if (valid)
+            timer_fragment(expected, sizeof expected, h, m);
+        if (!valid || strcmp(prior, expected)) {
+            free(prior);
+            return cm_fail(e, "timer drop-in was modified outside CM; refusing replacement/removal");
+        }
     }
     /* One empty OnCalendar resets all calendar AND monotonic triggers. Adding
      * empty On*Sec directives afterward would erase the new calendar as well. */
-    snprintf(text, sizeof text,
-             "%s[Timer]\nOnCalendar=\nOnCalendar=*-*-* "
-             "%02u:%02u:00\nRandomizedDelaySec=0\nAccuracySec=1min\nPersistent=true\n",
-             marker, hour, minute);
+    timer_fragment(text, sizeof text, hour, minute);
     if (dry) {
         if (remove)
             printf("# Remove only %s/%s\n", dir, file);

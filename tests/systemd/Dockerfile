@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unattended-upgrades ca-certificates debhelper && rm -rf /var/lib/apt/lists/*
 COPY . /src
 RUN cd /src && dpkg-buildpackage -us -uc -b && \
-    apt-get install -y /command-center_2.0.0_*.deb /command-center-shortcut_2.0.0_all.deb && \
+    apt-get install -y /command-center_2.1.0_*.deb /command-center-shortcut_2.1.0_all.deb && \
     test ! -L /etc/systemd/system/multi-user.target.wants/command-center.service && \
     test ! -L /etc/systemd/system/multi-user.target.wants/command-center-guard.service && \
     systemctl enable ssh.service && \

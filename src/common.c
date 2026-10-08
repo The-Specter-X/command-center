@@ -4,6 +4,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
+#include <signal.h>
 #include <spawn.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -325,8 +327,10 @@ int cm_prepare(const struct cm_paths *p, struct cm_error *e)
     }
     return 0;
 }
-static int named_lock(const struct cm_paths *p, const char *name, struct cm_error *e)
+int cm_named_lock(const struct cm_paths *p, const char *name, struct cm_error *e)
 {
+    if (strchr(name, '/') || !cm_plain(name, false))
+        return cm_fail(e, "invalid lock name");
     int dir = directory(p->run, true, e);
     if (dir < 0)
         return -1;
@@ -350,11 +354,11 @@ static int named_lock(const struct cm_paths *p, const char *name, struct cm_erro
 }
 int cm_lock(const struct cm_paths *p, struct cm_error *e)
 {
-    return named_lock(p, "lock", e);
+    return cm_named_lock(p, "lock", e);
 }
 int cm_guard_lock(const struct cm_paths *p, struct cm_error *e)
 {
-    return named_lock(p, "guard.lock", e);
+    return cm_named_lock(p, "guard.lock", e);
 }
 int cm_read_text(const char *dir, const char *name, char **out, struct cm_error *e)
 {
@@ -495,6 +499,52 @@ static int unique_keys(const char *text, size_t length, struct cm_error *e)
     }
     return result;
 }
+static bool finite_json(struct json_object *o)
+{
+    if (json_object_is_type(o, json_type_double))
+        return isfinite(json_object_get_double(o));
+    if (json_object_is_type(o, json_type_array)) {
+        for (size_t i = 0; i < json_object_array_length(o); i++)
+            if (!finite_json(json_object_array_get_idx(o, i)))
+                return false;
+    } else if (json_object_is_type(o, json_type_object)) {
+        json_object_object_foreach(o, key, value) {
+            (void)key;
+            if (!finite_json(value))
+                return false;
+        }
+    }
+    return true;
+}
+int cm_parse_json(const char *data, size_t len, struct json_object **out, struct cm_error *e)
+{
+    *out = NULL;
+    if (!data || !len || len > CM_MAX_FILE || memchr(data, 0, len))
+        return cm_fail(e, "invalid JSON size or embedded NUL");
+    struct json_tokener *tok = json_tokener_new_ex(32);
+    if (!tok)
+        return cm_fail(e, "cannot allocate JSON parser");
+    json_tokener_set_flags(tok, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
+    struct json_object *o = json_tokener_parse_ex(tok, data, (int)len);
+    enum json_tokener_error err = json_tokener_get_error(tok);
+    size_t end = json_tokener_get_parse_end(tok);
+    while (end < len &&
+           (data[end] == ' ' || data[end] == '\n' || data[end] == '\t' || data[end] == '\r'))
+        end++;
+    if (err != json_tokener_success || end != len || !o || !finite_json(o)) {
+        if (o)
+            json_object_put(o);
+        json_tokener_free(tok);
+        return cm_fail(e, "invalid JSON");
+    }
+    json_tokener_free(tok);
+    if (unique_keys(data, len, e)) {
+        json_object_put(o);
+        return -1;
+    }
+    *out = o;
+    return 0;
+}
 int cm_read_json(const char *dir, const char *name, struct json_object **out, struct cm_error *e)
 {
     *out = NULL;
@@ -502,35 +552,9 @@ int cm_read_json(const char *dir, const char *name, struct json_object **out, st
     int r = cm_read_text(dir, name, &data, e);
     if (r)
         return r;
-    struct json_tokener *tok = json_tokener_new_ex(32);
-    if (!tok) {
-        free(data);
-        return cm_fail(e, "cannot allocate JSON parser");
-    }
-    json_tokener_set_flags(tok, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
-    size_t len = strlen(data);
-    struct json_object *o = json_tokener_parse_ex(tok, data, (int)len);
-    enum json_tokener_error err = json_tokener_get_error(tok);
-    size_t end = json_tokener_get_parse_end(tok);
-    while (end < len &&
-           (data[end] == ' ' || data[end] == '\n' || data[end] == '\t' || data[end] == '\r'))
-        end++;
-    if (err != json_tokener_success || end != len || !o) {
-        if (o)
-            json_object_put(o);
-        json_tokener_free(tok);
-        free(data);
-        return cm_fail(e, "invalid JSON in %s/%s", dir, name);
-    }
-    json_tokener_free(tok);
-    if (unique_keys(data, len, e)) {
-        json_object_put(o);
-        free(data);
-        return -1;
-    }
+    r = cm_parse_json(data, strlen(data), out, e);
     free(data);
-    *out = o;
-    return 0;
+    return r;
 }
 static int write_text(const char *dir, const char *name, const char *text, mode_t mode,
                       struct cm_error *e)
@@ -617,23 +641,50 @@ int cm_exists(const char *dir, const char *name)
     struct stat st;
     return n > 0 && (size_t)n < sizeof p && lstat(p, &st) == 0;
 }
-int cm_exec(const char *program, char *const argv[], struct cm_error *e)
+int cm_exec_timeout(const char *program, char *const argv[], unsigned seconds, struct cm_error *e)
 {
     pid_t pid;
     char *env[] = {"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C", NULL};
     int spawned = posix_spawn(&pid, program, NULL, NULL, argv, env);
     if (spawned)
         return cm_fail(e, "execute %s: %s", program, strerror(spawned));
+    struct timespec start = {0}, now = {0}, pause = {.tv_nsec = 50000000};
+    clock_gettime(CLOCK_MONOTONIC, &start);
     int status;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno == EINTR)
-            continue;
-        return cm_fail(e, "wait: %s", strerror(errno));
+    bool expired = false;
+    for (;;) {
+        pid_t waited = waitpid(pid, &status, seconds ? WNOHANG : 0);
+        if (waited == pid)
+            break;
+        if (waited < 0) {
+            if (errno == EINTR)
+                continue;
+            return cm_fail(e, "wait: %s", strerror(errno));
+        }
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t elapsed = (uint64_t)(now.tv_sec - start.tv_sec);
+        if (elapsed > seconds || (elapsed == seconds && now.tv_nsec >= start.tv_nsec)) {
+            expired = true;
+            /* Only CM-controlled helpers receive deadlines. Package execution does not. */
+            kill(pid, SIGKILL);
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+                ;
+            break;
+        }
+        nanosleep(&pause, NULL);
     }
+    if (expired)
+        return cm_fail(e, "%s exceeded its %u-second deadline", program, seconds);
     if (!WIFEXITED(status) || WEXITSTATUS(status))
         return cm_fail(e, "%s failed (status %d)", program,
                        WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status));
     return 0;
+}
+int cm_exec(const char *program, char *const argv[], struct cm_error *e)
+{
+    unsigned seconds = !strcmp(program, "/usr/bin/systemctl") ||
+        !strcmp(program, "/usr/bin/systemd-run") || !strcmp(program, "/usr/bin/journalctl") ? 30U : 0U;
+    return cm_exec_timeout(program, argv, seconds, e);
 }
 int cm_capture(const char *program, char *const argv[], char **output, struct cm_error *e)
 {
@@ -777,4 +828,83 @@ int cm_service_config(const struct cm_config *c, const char *name, uint16_t *por
             return 0;
         }
     return cm_service(name, port, proto, e);
+}
+static void display(const char *s)
+{
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        if (*p < 32 || *p == 127)
+            printf("\\x%02x", *p);
+        else
+            putchar(*p);
+}
+static void display_value(struct json_object *v)
+{
+    if (!v)
+        fputs("unavailable", stdout);
+    else if (json_object_is_type(v, json_type_string))
+        display(json_object_get_string(v));
+    else
+        display(json_object_to_json_string_ext(v, JSON_C_TO_STRING_PLAIN));
+}
+void cm_print_report(struct json_object *o)
+{
+    if (json_object_is_type(o, json_type_array)) {
+        const char *columns[32];
+        size_t count = 0;
+        for (size_t i = 0; i < json_object_array_length(o); i++) {
+            struct json_object *v = json_object_array_get_idx(o, i);
+            if (!json_object_is_type(v, json_type_object)) {
+                display_value(v);
+                putchar('\n');
+                continue;
+            }
+            json_object_object_foreach(v, key, value) {
+                (void)value;
+                size_t k = 0;
+                while (k < count && strcmp(columns[k], key))
+                    k++;
+                if (k == count && count < 32)
+                    columns[count++] = key;
+            }
+        }
+        for (size_t k = 0; k < count; k++) {
+            if (k)
+                putchar('\t');
+            display(columns[k]);
+        }
+        if (count)
+            putchar('\n');
+        for (size_t i = 0; count && i < json_object_array_length(o); i++) {
+            struct json_object *v = json_object_array_get_idx(o, i);
+            if (!json_object_is_type(v, json_type_object))
+                continue;
+            for (size_t k = 0; k < count; k++) {
+                struct json_object *value = NULL;
+                json_object_object_get_ex(v, columns[k], &value);
+                if (k)
+                    putchar('\t');
+                display_value(value);
+            }
+            putchar('\n');
+        }
+        if (!json_object_array_length(o))
+            puts("No entries.");
+    } else if (json_object_is_type(o, json_type_object)) {
+        json_object_object_foreach(o, key, value) {
+            if (!strcmp(key, "schema"))
+                continue;
+            display(key);
+            fputs(": ", stdout);
+            if (json_object_is_type(value, json_type_array) || json_object_is_type(value, json_type_object)) {
+                putchar('\n');
+                cm_print_report(value);
+            } else {
+                display_value(value);
+                putchar('\n');
+            }
+        }
+    } else {
+        display_value(o);
+        putchar('\n');
+    }
 }

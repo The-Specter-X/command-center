@@ -13,7 +13,7 @@ CM owns exactly two nftables tables:
 - `inet command_center`: host input/output policy and connection meters.
 - `inet command_center_bans`: timed and permanent incoming address bans.
 
-It never runs `flush ruleset` and never modifies another application's tables. Reload rebuilds CM's tables atomically. Other firewall tables, including Docker's tables, remain effective. A CM allow cannot override a drop in another base chain.
+It never runs `flush ruleset` and never modifies another application's tables. Reload applies the affected CM objects atomically. Unchanged policy and metadata edits preserve connection meters. Other firewall tables, including Docker's tables, remain effective. A CM allow cannot override a drop in another base chain.
 
 Forwarding and NAT remain under their existing owners. Docker-published bridge ports traverse forwarding/NAT and are outside CM's host input/output policy.
 
@@ -45,8 +45,8 @@ sudo apt-get install build-essential pkg-config libnftables-dev libjson-c-dev \
   libsystemd-dev libnl-route-3-dev libcurl4-openssl-dev python3 debhelper
 make -j2 all check
 dpkg-buildpackage -us -uc -b
-sudo apt-get install ../command-center_2.0.0_$(dpkg --print-architecture).deb \
-  ../command-center-shortcut_2.0.0_all.deb
+sudo apt-get install ../command-center_2.1.0_$(dpkg --print-architecture).deb \
+  ../command-center-shortcut_2.1.0_all.deb
 ~~~
 
 The shortcut package is optional and conflicts with Debian's `config-manager` package, which also owns `cm`. Install the main package alone to use `command-center`.

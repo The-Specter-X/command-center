@@ -319,6 +319,16 @@ static int info_all(unsigned interval, bool json, const char *selected, struct c
     json_object_object_add(o, "cpus", cpu_json(before, after));
     free(before);
     free(after);
+    if (selected) {
+        struct json_object *cpus;
+        json_object_object_get_ex(o, "cpus", &cpus);
+        if (json)
+            puts(json_object_to_json_string_ext(cpus, JSON_C_TO_STRING_PRETTY));
+        else
+            cm_print_report(cpus);
+        json_object_put(o);
+        return 0;
+    }
     if (memory(&ram, e) || filesystems(&disk, e)) {
         if (ram)
             json_object_put(ram);
@@ -327,18 +337,6 @@ static int info_all(unsigned interval, bool json, const char *selected, struct c
     }
     json_object_object_add(o, "memory", ram);
     json_object_object_add(o, "filesystems", disk);
-    if (selected) {
-        struct json_object *v = NULL;
-        if (!json_object_object_get_ex(o, selected, &v)) {
-            json_object_put(o);
-            return cm_fail(e, "report section unavailable");
-        }
-        if (!json)
-            printf("%s:\n", selected);
-        puts(json_object_to_json_string_ext(v, JSON_C_TO_STRING_PRETTY));
-        json_object_put(o);
-        return 0;
-    }
     if (json)
         puts(json_object_to_json_string_ext(o, JSON_C_TO_STRING_PRETTY |
                                                    JSON_C_TO_STRING_NOSLASHESCAPE));
@@ -537,10 +535,13 @@ int cm_report(const char *name, unsigned interval, bool json, struct cm_error *e
     else
         return cm_fail(e, "unknown report");
     if (!r) {
-        if (!json)
+        if (json)
+            puts(json_object_to_json_string_ext(o, JSON_C_TO_STRING_PRETTY |
+                                               JSON_C_TO_STRING_NOSLASHESCAPE));
+        else {
             printf("%s:\n", name);
-        puts(json_object_to_json_string_ext(o, JSON_C_TO_STRING_PRETTY |
-                                                   JSON_C_TO_STRING_NOSLASHESCAPE));
+            cm_print_report(o);
+        }
     }
     if (o)
         json_object_put(o);

@@ -4,18 +4,33 @@ if [ "$1" = purge ]; then
     if [ -d /run/systemd/system ]; then
         systemctl stop command-center-rollback.timer command-center-rollback.service 2>/dev/null || true
     fi
-    if [ -f /etc/apt/apt.conf.d/90command-center ] &&
-       head -n 1 /etc/apt/apt.conf.d/90command-center | grep -q '^// Managed by Command Center\.'; then
+    if [ -f /etc/apt/apt.conf.d/90command-center ] && awk '
+       NR == 1 { ok = ($0 == "// Managed by Command Center. Edit other APT fragments for additional policy.") }
+       NR == 2 { ok = ok && ($0 == "APT::Periodic::Update-Package-Lists \"1\";") }
+       NR == 3 { ok = ok && ($0 ~ /^APT::Periodic::Unattended-Upgrade "[01]";$/) }
+       NR == 4 { ok = ok && ($0 ~ /^Unattended-Upgrade::Automatic-Reboot "(true|false)";$/) }
+       END { exit !(ok && NR == 4) }
+       ' /etc/apt/apt.conf.d/90command-center; then
         rm -f /etc/apt/apt.conf.d/90command-center
     fi
     timer=/etc/systemd/system/apt-daily-upgrade.timer.d/90-command-center.conf
-    if [ -f "$timer" ] && head -n 1 "$timer" | grep -q '^# Managed by Command Center\.'; then
+    if [ -f "$timer" ] && awk '
+       NR == 1 { ok = ($0 == "# Managed by Command Center.") }
+       NR == 2 { ok = ok && ($0 == "[Timer]") }
+       NR == 3 { ok = ok && ($0 == "OnCalendar=") }
+       NR == 4 { ok = ok && ($0 ~ /^OnCalendar=\*-\*-\* ([01][0-9]|2[0-3]):[0-5][0-9]:00$/) }
+       NR == 5 { ok = ok && ($0 == "RandomizedDelaySec=0") }
+       NR == 6 { ok = ok && ($0 == "AccuracySec=1min") }
+       NR == 7 { ok = ok && ($0 == "Persistent=true") }
+       END { exit !(ok && NR == 7) }
+       ' "$timer"; then
         rm -f "$timer"
     fi
     rm -f /etc/command-center/config.json
     rm -f /var/lib/command-center/state.json /var/lib/command-center/committed.json
     rm -f /var/lib/command-center/applied.json /var/lib/command-center/transaction.json /var/lib/command-center/pending.json
-    rm -f /run/command-center/active.json /run/command-center/lock /run/command-center/guard.lock
+    rm -f /run/command-center/active.json /run/command-center/guard-health.json
+    rm -f /run/command-center/lock /run/command-center/guard.lock /run/command-center/lifecycle.lock /run/command-center/updates.lock
     rmdir /run/command-center 2>/dev/null || true
     rmdir /etc/command-center /var/lib/command-center 2>/dev/null || true
     if [ -d /run/systemd/system ]; then systemctl daemon-reload 2>/dev/null || true; fi
