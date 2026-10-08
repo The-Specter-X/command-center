@@ -7,7 +7,10 @@ fi
 if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
     # --no-start also suppresses debhelper's removal-stop snippet.
     # Stop while ExecStop's executable is still installed; honor policy-rc.d.
-    deb-systemd-invoke stop command-center-guard.service command-center.service
+    deb-systemd-invoke stop command-center-guard.service command-center.service || true
+    # A failed ExecStart does not run ExecStop. Verify explicit cleanup while
+    # the executable is still installed; retain it if cleanup/recovery fails.
+    /usr/bin/command-center stop
 fi
 #DEBHELPER#
 

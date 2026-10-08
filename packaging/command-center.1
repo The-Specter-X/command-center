@@ -1,5 +1,5 @@
 .\" SPDX-License-Identifier: GPL-2.0-or-later
-.TH COMMAND-CENTER 1 "October 2026" "Command Center 2.0.0"
+.TH COMMAND-CENTER 1 "October 2026" "Command Center 2.1.0"
 .SH NAME
 command-center \- native Debian host firewall and server administration tool
 .SH SYNOPSIS
@@ -70,8 +70,13 @@ Also start/stop when used with enable/disable.
 Report activation, boot/service state, numbered rules, bans and drift.
 .TP
 .B reload
-Validate and atomically rebuild only CM objects if active; commit
-desired settings while stopped without starting CM.
+Validate and atomically update affected CM objects if active; commit
+desired settings while stopped without starting CM. Metadata-only and
+unchanged reloads preserve policy meters and require no confirmation.
+.TP
+.B plan [--json]
+Compare desired and committed policy: defaults, rule IDs/order, guard/ban
+scope, affected objects and confirmation interval. Does not modify files.
 .TP
 .B export, check
 Export desired native source, or validate it against the current kernel.
@@ -124,6 +129,10 @@ Change ignored automatic-protection networks. Loopback is initially ignored.
 .PP
 The monitor uses applied policy during staging and pauses during pending
 confirmation. It is not a general service-log/HTTP detector.
+Full tracking or ban storage declines new admission, preserves existing bans,
+advances the journal cursor and reports saturation without terminating the monitor.
+Status includes heartbeat, lag, saturation, activation consistency, ban membership
+and an overdue rollback deadline; an unhealthy status exits 3.
 .TP
 .B ban IP [--for DURATION|permanent] [--scope all|ssh], unban IP, bans
 Manual single-address bans; default one hour/all incoming host protocols.

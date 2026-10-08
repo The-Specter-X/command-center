@@ -87,7 +87,7 @@ int cm_guard_event(const struct cm_config *c, struct cm_state *s, const char *ip
         }
     if (index == s->attempt_count) {
         if (index == CM_MAX_ATTEMPTS)
-            return cm_fail(e, "SSH failure tracking capacity reached");
+            return 1; /* Bounded admission failure; existing sources still progress. */
         memset(&s->attempts[index], 0, sizeof s->attempts[index]);
         strcpy(s->attempts[index].address, ip);
         s->attempt_count++;
@@ -95,10 +95,14 @@ int cm_guard_event(const struct cm_config *c, struct cm_state *s, const char *ip
     struct cm_attempt *a = &s->attempts[index];
     if (a->count && now < a->times[a->count - 1])
         return 0;
-    if (a->count == 100)
-        return cm_fail(e, "SSH failure count capacity reached");
+    if (a->count == 100) {
+        memmove(a->times, a->times + 1, 99 * sizeof *a->times);
+        a->count--;
+    }
     a->times[a->count++] = now;
     if (a->count >= c->threshold) {
+        if (s->ban_count == CM_MAX_BANS)
+            return 1; /* Retain attempts and every existing ban; advance the cursor. */
         if (cm_state_ban_scoped(s, ip, c->duration ? now + c->duration : INT64_MAX, true,
                                 c->guard_all, e))
             return -1;
@@ -147,6 +151,27 @@ static int seek(sd_journal *j, struct cm_state *s, struct cm_error *e)
     *s->cursor = 0;
     return 0;
 }
+static int health(const struct cm_paths *p, const struct cm_state *s, uint64_t event,
+                  uint64_t progress, uint64_t processed, uint64_t dropped, bool backlog,
+                  bool paused, struct cm_error *e)
+{
+    uint64_t now = cm_now();
+    struct json_object *o = json_object_new_object();
+    json_object_object_add(o, "schema", json_object_new_int(1));
+    json_object_object_add(o, "heartbeat", json_object_new_uint64(now));
+    json_object_object_add(o, "last_progress", json_object_new_uint64(progress));
+    json_object_object_add(o, "last_event", json_object_new_uint64(event));
+    json_object_object_add(o, "processed", json_object_new_uint64(processed));
+    json_object_object_add(o, "dropped", json_object_new_uint64(dropped));
+    json_object_object_add(o, "backlog", json_object_new_boolean(backlog));
+    json_object_object_add(o, "lag_seconds", json_object_new_uint64(backlog && now > event ? now - event : 0));
+    json_object_object_add(o, "paused", json_object_new_boolean(paused));
+    json_object_object_add(o, "tracking_full", json_object_new_boolean(s->attempt_count == CM_MAX_ATTEMPTS));
+    json_object_object_add(o, "ban_full", json_object_new_boolean(s->ban_count == CM_MAX_BANS));
+    int r = cm_write_json(p->run, "guard-health.json", o, e);
+    json_object_put(o);
+    return r;
+}
 int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
 {
     if (p->offline)
@@ -181,6 +206,7 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
     struct cm_config *c = cm_alloc(sizeof *c);
     struct cm_state *s = cm_alloc(sizeof *s);
     bool positioned = false, ready = false;
+    uint64_t event = 0, progress = 0, processed = 0, dropped = 0, warned = 0;
     r = 0;
     while (!stopping) {
         struct cm_error busy;
@@ -202,11 +228,17 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
             close(lock);
             break;
         }
+        if (!c->activation_known) {
+            close(lock);
+            r = cm_fail(e, "runtime activation is unknown; reconcile with start or stop");
+            break;
+        }
         if (cm_exists(p->state, "transaction.json")) {
             close(lock);
             r = cm_fail(e, "recover the interrupted transaction before running the SSH monitor");
             break;
         }
+        bool changed = !positioned;
         if (!positioned) {
             if (seek(journal, s, e)) {
                 close(lock);
@@ -215,23 +247,30 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
             }
             positioned = true;
         }
-        if (!ready) {
-            sd_notify(0, "READY=1");
-            ready = true;
-        }
         if (cm_exists(p->state, "pending.json")) {
+            r = health(p, s, event, progress, processed, dropped, false, true, e);
             close(lock);
+            if (r)
+                break;
+            if (!ready) {
+                sd_notify(0, "READY=1");
+                ready = true;
+            }
             usleep(200000);
             continue;
         }
-        bool changed = false, new_ban = false;
+        bool new_ban = false;
         unsigned entries = 0;
         uint64_t now = cm_now();
         while (entries++ < 128 && (r = sd_journal_next(journal)) > 0) {
             uint64_t realtime;
             const void *data;
             size_t length;
-            if (sd_journal_get_realtime_usec(journal, &realtime) >= 0 &&
+            if (sd_journal_get_realtime_usec(journal, &realtime) >= 0) {
+                event = realtime / 1000000;
+            } else
+                realtime = 0;
+            if (realtime &&
                 realtime / 1000000 <= now && now - realtime / 1000000 < c->window &&
                 sd_journal_get_data(journal, "MESSAGE", &data, &length) >= 0 && length > 8 &&
                 length <= 4104) {
@@ -243,9 +282,18 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
                     message[n] = 0;
                     if (cm_guard_parse(message, ip, sizeof ip)) {
                         bool banned = false;
-                        if (cm_guard_event(c, s, ip, realtime / 1000000, &banned, e)) {
+                        int result = cm_guard_event(c, s, ip, realtime / 1000000, &banned, e);
+                        if (result < 0) {
                             r = -1;
                             break;
+                        }
+                        if (result > 0) {
+                            dropped++;
+                            if (!warned || now - warned >= 60) {
+                                cm_event(4, "ssh", "saturation", 0, ip,
+                                          "SSH capacity reached; new event admission declined; existing protection retained");
+                                warned = now;
+                            }
                         }
                         if (banned) {
                             new_ban = true;
@@ -260,6 +308,8 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
                 break;
             }
             changed = true;
+            processed++;
+            progress = now;
         }
         if (r < 0) {
             if (!*e->text)
@@ -268,7 +318,7 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
             r = -1;
             break;
         }
-        if (changed || !positioned) {
+        if (changed) {
             if (new_ban) {
                 struct cm_options opt = {.no_rollback = true, .state_only = true};
                 r = cm_transaction(p, c, s, &opt, false, e);
@@ -278,6 +328,19 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
                 json_object_put(state);
             }
         }
+        if (!r) {
+            int mismatch = cm_ban_drift(c, s, e);
+            if (mismatch < 0)
+                r = -1;
+            else if (mismatch) {
+                struct cm_options opt = {.no_rollback = true, .state_only = true};
+                r = cm_transaction(p, c, s, &opt, false, e);
+                if (!r)
+                    cm_event(4, "ssh", "ban-reconcile", 0, NULL, "live ban membership restored from current state");
+            }
+        }
+        if (!r)
+            r = health(p, s, event, progress, processed, dropped, entries > 128, false, e);
         close(lock);
         if (r < 0)
             break;
@@ -285,6 +348,9 @@ int cm_guard_run(const struct cm_paths *p, struct cm_error *e)
             sd_notify(0, "READY=1");
             ready = true;
         }
+        /* Unmatched journal traffic also wakes the reader. Leave a control-lock
+         * admission window between batches rather than immediately reacquiring. */
+        usleep(20000);
         if (entries <= 128) {
             r = sd_journal_wait(journal, 1000000);
             if (r < 0 && r != -EINTR) {

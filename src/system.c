@@ -119,10 +119,13 @@ int cm_systemd(const char *action, bool guard, struct cm_error *e)
                 return -1;
             if (unit_busy(unit, &busy, e))
                 return -1;
+            /* Cancelling a running ExecCondition can produce failed/signal,
+             * even though the stop job completed and the unit is stopped. */
+            if (!busy && !strcmp(action, "stop") &&
+                (!strcmp(state, "inactive") || !strcmp(state, "failed")))
+                return 0;
             if (!strcmp(state, "failed"))
                 return cm_fail(e, "%s failed; inspect cm logs", unit);
-            if (!busy && !strcmp(action, "stop") && !strcmp(state, "inactive"))
-                return 0;
             if (!busy && !strcmp(action, "start") && !strcmp(state, "active"))
                 return 0;
             if (!busy && guard && !strcmp(state, "inactive"))
@@ -135,6 +138,59 @@ int cm_systemd(const char *action, bool guard, struct cm_error *e)
     return 0;
 }
 static volatile sig_atomic_t log_stop;
+int cm_reconcile_guard(const struct cm_paths *p, struct cm_error *e)
+{
+    int lock = cm_read_lock(p, e);
+    for (unsigned i = 0; lock == -3 && i < 100; i++) {
+        usleep(50000);
+        lock = cm_read_lock(p, e);
+    }
+    if (lock < 0)
+        return -1;
+    struct cm_config *c = cm_alloc(sizeof *c);
+    int r = cm_committed_policy(p, c, e);
+    bool active = c->enabled && c->guard_enabled;
+    if (!r && !c->activation_known)
+        r = cm_fail(e, "activation unknown; reconcile with start or stop");
+    free(c);
+    close(lock);
+    if (r)
+        return -1;
+    if (!active) {
+        char service[64];
+        struct cm_error ignored = {0};
+        if (cm_systemd_state("command-center-guard.service", "ActiveState", service,
+                            sizeof service, &ignored) || !strcmp(service, "inactive") ||
+            !strcmp(service, "failed"))
+            return 0;
+    }
+    return cm_systemd(active ? "start" : "stop", true, e);
+}
+int cm_stop(const struct cm_paths *p, struct cm_error *e)
+{
+    struct cm_error service_error = {0};
+    int stopped = cm_systemd("stop", false, &service_error);
+    /* A failed loader never ran ExecStop. Explicit cleanup must run regardless. */
+    int lock = cm_lock(p, e);
+    for (unsigned i = 0; lock < 0 && i < 100; i++) {
+        usleep(50000);
+        lock = cm_lock(p, e);
+    }
+    if (lock < 0)
+        return -1;
+    int r = cm_suspend(p, e);
+    close(lock);
+    if (r)
+        return -1;
+    char guard[64];
+    if (cm_systemd_state("command-center-guard.service", "ActiveState", guard, sizeof guard, e))
+        return -1;
+    if (strcmp(guard, "inactive") && strcmp(guard, "failed"))
+        return cm_systemd("stop", true, e);
+    if (stopped)
+        cm_log("loader stop reported %s; explicit CM cleanup verified", service_error.text);
+    return 0;
+}
 static void log_signal(int signal_number)
 {
     (void)signal_number;

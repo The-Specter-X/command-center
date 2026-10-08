@@ -31,6 +31,7 @@ sudo cm allow https --stage
 sudo cm deny 5432/tcp --stage
 sudo cm config validate
 sudo cm check
+sudo cm plan
 sudo cm reload
 sudo cm confirm
 ~~~
@@ -40,6 +41,10 @@ The running monitor uses applied settings throughout staging. Reload is the expl
 ## Inspect behavior
 
 Use `status` for current activation, boot startup, table presence, service state, numbered desired rules and drift. Use `rules` to inspect order and IDs. Ordinary rules are first-match; use move to put a specific deny before a broad allow.
+
+`plan` compares desired settings with the committed policy, shows changed rule IDs/order and defaults, and identifies policy rebuilds, guard/ban-scope changes and the confirmation interval. `--json` includes both configurations. Dry-run begins with the same plan before showing native source. Unchanged/metadata-only reloads leave connection meters intact.
+
+Status also reports activation certainty, loader health, expected ban membership, heartbeat/progress, lag, saturation and an overdue confirmation deadline. Exit 3 means attention is required. Processed/dropped counters restart with the guard; a recent heartbeat alone does not erase a saturation/lag warning.
 
 A foreign table may still drop traffic that CM allows. Host input/output rules do not cover bridge-container forwarding. Inspect Docker's firewall policy and cloud/network controls with their own owners when diagnosing those paths.
 
@@ -57,6 +62,11 @@ CM reserves its two table names. Do not use those names for another application.
 | Established configuration/state files are missing or invalid | Resolve existing intent/pending records, then recover checkpoint |
 | The committed checkpoint is missing | Restore a trusted backup; boot refuses to initialize an existing installation as passive |
 | Managed kernel structure was edited/flushed | Inspect status, then reload |
+| Runtime activation marker is missing in this boot | Explicit start/stop; rollback first if confirmation is pending |
+| Expected live ban is missing or has the wrong expiry/scope | Reload; an active guard also reconciles on idle cycles |
+| Guard capacity is full | Inspect existing bans/recent sources, release only deliberately selected entries, and check dropped events; the guard remains running |
+| Guard heartbeat is stale or lag exceeds the failure window | Inspect journal/service health and load; investigate dropped/obsolete events |
+| Rollback deadline is overdue | Rollback immediately and inspect the timer/service logs |
 | Protector is unhealthy after policy committed | Inspect logs/service diagnostics; retry protection or restart the guard |
 | CM should stop this boot but resume next boot | Stop |
 | CM should stop and remain off | Disable --now |
@@ -104,13 +114,15 @@ CM's fragment controls periodic unattended installation and reboot policy. Upstr
 
 CM refuses an owned update/drop-in file that was changed outside its expected format. Move administrator policy to a separate upstream fragment rather than asking CM to overwrite it.
 
+Checks, package execution and update log display do not block firewall rollback or guard commits. Only owned update configuration takes updates.lock. Finite CM-controlled helpers have a 30-second deadline; CM does not impose a kill deadline on apt/dpkg transactions.
+
 ## Backups and removal
 
 Back up /etc/command-center and /var/lib/command-center with root-only access while no mutation is running. The latter contains source addresses, attempt history and journal cursor data. It can be sensitive operational information.
 
-Package upgrades preserve the running kernel policy and do not restart the oneshot loader. A running protector is restarted with the new executable; inactive services stay inactive. Package service actions respect Debian's policy-rc.d. Stop CM explicitly before removal if administrator policy inhibits service actions.
+Package upgrades preserve the running kernel policy and do not restart the oneshot loader. A running protector is restarted with the new executable; inactive services stay inactive. Debhelper service actions respect Debian's policy-rc.d. Explicit removal additionally verifies CM cleanup while its executable is present, including after a failed loader start, and aborts if cleanup/recovery fails.
 
-Removal first resolves a pending rollback, then stops the loader/monitor and removes only CM enforcement. Configuration/state remain for reinstallation. Purge removes known CM data and owned APT/timer files, while preserving unrelated files in the same directory.
+Removal first resolves a pending rollback, then stops the loader/monitor and removes only CM enforcement. Configuration/state remain for reinstallation. Purge removes known CM data and unchanged generated APT/timer files, while preserving externally edited fragments and unrelated files in the same directory.
 
 Standalone make install has no dpkg lifecycle hooks. Stop/disable CM explicitly before removing its binary/units.
 

@@ -13,7 +13,7 @@ void cm_help(FILE *f)
         "          [--interface NAME] [--family 4|6|any] [--comment TEXT]\n"
         "          limit also accepts --rate N/second|minute|hour --burst N\n"
         "  rules | delete NUMBER | move NUMBER before NUMBER\n"
-        "  default in|out allow|deny | status | reload | export | check | doctor\n"
+        "  default in|out allow|deny | status | reload | plan | export | check | doctor\n"
         "  start | stop | enable [--now] | disable [--now]\n"
         "  confirm | rollback | recover [checkpoint] | init\n"
         "  profiles | profile show NAME | use NAME [--ssh-port PORT/tcp] [--keep-rules]\n"
@@ -22,7 +22,7 @@ void cm_help(FILE *f)
         "              [--scope ssh|all] [--port PORT/tcp]\n"
         "  protect ssh status|disable | protect ssh ignore add|delete CIDR\n"
         "  ban IP [--for DURATION|permanent] [--scope all|ssh] | unban IP | bans\n"
-        "  logging level debug|info|warning|error|critical | logging packets off|low|medium|high\n"
+        "  logging level debug|info|notice|warning|error|critical | logging packets off|low|medium|high\n"
         "  logs [--since DURATION] [--level SEVERITY] [--lines N] [--follow]\n"
         "  net [addresses|interfaces|routes|dns|listeners]\n"
         "  net route get ADDRESS | net public-ip [--family 4|6] [--url HTTPS_URL]\n"
@@ -92,17 +92,17 @@ static int start(const struct cm_paths *p, const struct cm_options *opt, struct 
     int r = cm_config_load(p, c, e) || cm_state_load(p, s, e) ? -1 : 0;
     if (!r) {
         c->enabled = true;
+        c->activation_known = true;
         r = cm_transaction(p, c, s, opt, false, e);
     }
-    bool needs_guard = c->guard_enabled;
     free(c);
     free(s);
     if (lock >= 0)
         close(lock);
     if (!r && !p->offline && !opt->dry_run)
         r = cm_systemd("start", false, e);
-    if (!r && needs_guard && !p->offline && !opt->dry_run)
-        r = cm_systemd("start", true, e);
+    if (!r && !p->offline && !opt->dry_run)
+        r = cm_reconcile_guard(p, e);
     return r;
 }
 static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_state *s,
@@ -117,6 +117,8 @@ static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_sta
         cm_rules(c, json);
     else if (!strcmp(cmd, "bans") && !n)
         show_bans(s, json);
+    else if (!strcmp(cmd, "plan") && !n)
+        return cm_plan(p, c, opt, true, json, e);
     else if ((!strcmp(cmd, "export") || !strcmp(cmd, "check")) && !n) {
         struct cm_config candidate = *c;
         candidate.enabled = true;
@@ -201,7 +203,7 @@ static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_sta
         return cm_aliases(c, 0, v, json, e);
     else if (!strcmp(cmd, "service")) {
         r = cm_aliases(c, n, v, json, e);
-        mutate = !(n == 2 && !strcmp(v[0], "show"));
+        mutate = n && !(n == 2 && !strcmp(v[0], "show"));
     } else if (!strcmp(cmd, "profiles") && !n)
         puts(json ? "[\"passive\",\"guard-only\",\"web-server\",\"ssh-only\",\"isolation\"]"
                   : "passive\nguard-only\nweb-server\nssh-only\nisolation");
@@ -209,22 +211,21 @@ static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_sta
         int offset = !strcmp(cmd, "profile") ? 1 : 0;
         bool keep = false;
         uint16_t port = 22;
-        char proto[5];
-        r = cm_service_config(c, "ssh", &port, proto, e);
-        if (!r && strcmp(proto, "tcp"))
-            r = cm_fail(e, "SSH alias must be TCP");
+        const char *override = NULL;
         for (int i = offset + 1; i < n && !r; i++) {
             if (!strcmp(v[i], "--keep-rules"))
                 keep = true;
             else if (!strcmp(v[i], "--ssh-port") && i + 1 < n) {
-                r = cm_service_config(c, v[++i], &port, proto, e);
-                if (!r && strcmp(proto, "tcp"))
-                    r = cm_fail(e, "SSH port must be TCP");
+                if (override)
+                    r = cm_fail(e, "duplicate SSH port option");
+                override = v[++i];
             } else
                 r = cm_fail(e, "unknown profile option");
         }
         if (n <= offset)
             r = cm_fail(e, "profile name required");
+        if (!r && (override || strcmp(v[offset], "passive")))
+            r = cm_ssh_port(c, override, &port, e);
         if (!r)
             r = cm_profile(c, v[offset], port, keep, e);
         if (!r && offset) {
@@ -318,12 +319,26 @@ static int dispatch(const struct cm_paths *p, struct cm_config *c, struct cm_sta
         mutate = true;
     } else
         return cm_fail(e, "unknown command or invalid arguments; use cm help");
-    if (!r && mutate)
-        r = cm_transaction(p, c, s, opt, false, e);
+    if (!r && mutate) {
+        struct cm_options transaction = *opt;
+        transaction.state_only = !strcmp(cmd, "ban") || !strcmp(cmd, "unban");
+        r = cm_transaction(p, c, s, &transaction, false, e);
+    }
     if (!r && mutate && !p->offline && !opt->dry_run)
         cm_event(5, opt->stage ? "configuration" : "firewall", cmd, audit_rule, audit_address,
                   "%s %s", cmd, opt->stage ? "staged" : "committed");
     return r;
+}
+static bool command_readonly(const char *cmd, int n, char **v)
+{
+    const char *names[] = {"rules", "bans", "export", "status", "doctor", "check",
+                          "profiles", "profile", "services", "guard-check", "plan"};
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++)
+        if (!strcmp(cmd, names[i]))
+            return true;
+    return (!strcmp(cmd, "service") && (!n || (n == 2 && !strcmp(v[0], "show")))) ||
+        (!strcmp(cmd, "config") && (n != 1 || strcmp(v[0], "restore"))) ||
+        (!strcmp(cmd, "protect") && n == 2 && !strcmp(v[1], "status"));
 }
 int main(int argc, char **argv)
 {
@@ -338,7 +353,7 @@ int main(int argc, char **argv)
     const char *root = NULL;
     const char *command_name = NULL;
     char **args = cm_alloc((size_t)(argc + 1) * sizeof *args);
-    int count = 0, result = 0, lock = -1;
+    int count = 0, result = 0, lock = -1, lifecycle = -1;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--root")) {
             if (root || i + 1 >= argc)
@@ -429,6 +444,17 @@ int main(int argc, char **argv)
     }
     if (now && strcmp(cmd, "enable") && strcmp(cmd, "disable"))
         goto usage;
+    bool readonly = command_readonly(cmd, n, v);
+    /* Never hold this lock in unit helpers: their caller waits for them while
+     * holding it. CLI lifecycle intent remains serialized across systemd jobs. */
+    if (!readonly && !opt.dry_run && strcmp(cmd, "updates") && strcmp(cmd, "guard") &&
+        strcmp(cmd, "apply") && strcmp(cmd, "suspend")) {
+        if (cm_prepare(&p, &e))
+            goto failed;
+        lifecycle = cm_named_lock(&p, "lifecycle.lock", &e);
+        if (lifecycle < 0)
+            goto failed;
+    }
     if (!strcmp(cmd, "start") || !strcmp(cmd, "stop") || !strcmp(cmd, "enable") ||
         !strcmp(cmd, "disable")) {
         if (n || opt.stage || json)
@@ -470,17 +496,18 @@ int main(int argc, char **argv)
                 goto failed;
             result = cm_suspend(&p, &e);
         } else
-            result = cm_systemd("stop", false, &e);
+            result = cm_stop(&p, &e);
         goto finished;
     }
     if (!strcmp(cmd, "updates")) {
         if (opt.stage || now || json)
             goto usage;
-        if (n != 1 || strcmp(v[0], "status")) {
+        if (n && (!strcmp(v[0], "enable") || !strcmp(v[0], "disable") ||
+                  !strcmp(v[0], "reboot") || !strcmp(v[0], "schedule"))) {
             if (!opt.dry_run) {
                 if (cm_prepare(&p, &e))
                     goto failed;
-                lock = cm_lock(&p, &e);
+                lock = cm_named_lock(&p, "updates.lock", &e);
                 if (lock < 0)
                     goto failed;
             }
@@ -496,14 +523,6 @@ int main(int argc, char **argv)
         result = cm_guard_run(&p, &e);
         goto finished;
     }
-    bool readonly = !strcmp(cmd, "rules") || !strcmp(cmd, "bans") || !strcmp(cmd, "export") ||
-                    !strcmp(cmd, "status") || !strcmp(cmd, "doctor") || !strcmp(cmd, "check") ||
-                    !strcmp(cmd, "profiles") || !strcmp(cmd, "profile") ||
-                    !strcmp(cmd, "services") ||
-                    (!strcmp(cmd, "service") && n == 2 && !strcmp(v[0], "show")) ||
-                    (!strcmp(cmd, "config") && (n != 1 || strcmp(v[0], "restore"))) ||
-                    (!strcmp(cmd, "protect") && n == 2 && !strcmp(v[1], "status")) ||
-                    !strcmp(cmd, "guard-check");
     if (opt.stage &&
         (readonly || !strcmp(cmd, "ban") || !strcmp(cmd, "unban") || !strcmp(cmd, "protect")))
         goto usage;
@@ -540,16 +559,11 @@ int main(int argc, char **argv)
                      : !strcmp(cmd, "rollback") ? cm_rollback(&p, &e)
                                                 : cm_recover(&p, &e);
         if (!result && !p.offline) {
-            struct cm_config *applied = cm_alloc(sizeof *applied);
-            result = cm_committed_policy(&p, applied, &e);
             if (lock >= 0) {
                 close(lock);
                 lock = -1;
             }
-            if (!result)
-                result = cm_systemd(applied->enabled && applied->guard_enabled ? "start" : "stop",
-                                    true, &e);
-            free(applied);
+            result = cm_reconcile_guard(&p, &e);
         }
         goto finished;
     }
@@ -570,6 +584,8 @@ int main(int argc, char **argv)
             goto usage;
         struct cm_config *committed = cm_alloc(sizeof *committed);
         result = cm_committed_policy(&p, committed, &e);
+        if (!result && !committed->activation_known)
+            result = cm_fail(&e, "activation unknown; reconcile with start or stop");
         if (!result)
             result = committed->enabled && committed->guard_enabled ? 0 : 1;
         free(committed);
@@ -580,27 +596,20 @@ int main(int argc, char **argv)
         goto usage;
     struct cm_config *c = cm_alloc(sizeof *c);
     struct cm_state *s = cm_alloc(sizeof *s);
-    result = cm_config_load(&p, c, &e) || cm_state_load(&p, s, &e) ? -1 : 0;
-    bool had_guard = false;
-    if (!result && !readonly && !p.offline &&
-        (!strcmp(cmd, "protect") || !strcmp(cmd, "use") || !strcmp(cmd, "reload"))) {
-        struct cm_config *applied = cm_alloc(sizeof *applied);
-        result = cm_committed_policy(&p, applied, &e);
-        had_guard = applied->guard_enabled;
-        free(applied);
-    }
+    bool ban_command = !strcmp(cmd, "ban") || !strcmp(cmd, "unban");
+    result = (ban_command ? cm_committed_policy(&p, c, &e) : cm_config_load(&p, c, &e)) ||
+        cm_state_load(&p, s, &e) ? -1 : 0;
     if (!result) {
         cm_state_expire(s, cm_now());
         result = dispatch(&p, c, s, cmd, n, v, json, &opt, &e);
     }
-    if (!result && !readonly && !p.offline && !opt.dry_run && !opt.stage && c->enabled &&
-        (c->guard_enabled || had_guard) &&
+    if (!result && !readonly && !p.offline && !opt.dry_run && !opt.stage &&
         (!strcmp(cmd, "protect") || !strcmp(cmd, "use") || !strcmp(cmd, "reload"))) {
         if (lock >= 0) {
             close(lock);
             lock = -1;
         }
-        result = cm_systemd(c->guard_enabled ? "start" : "stop", true, &e);
+        result = cm_reconcile_guard(&p, &e);
     }
     free(c);
     free(s);
@@ -610,6 +619,8 @@ finished:
 done:
     if (lock >= 0)
         close(lock);
+    if (lifecycle >= 0)
+        close(lifecycle);
     free(args);
     return result;
 failed:

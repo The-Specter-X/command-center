@@ -378,10 +378,13 @@ int cm_network(int argc, char **argv, bool json, struct cm_error *e)
     else
         return cm_fail(e, "unknown network command or arguments");
     if (!r) {
-        if (!json)
+        if (json)
+            puts(json_object_to_json_string_ext(o, JSON_C_TO_STRING_PRETTY |
+                                               JSON_C_TO_STRING_NOSLASHESCAPE));
+        else {
             printf("Network %s (current network namespace):\n", cmd);
-        puts(json_object_to_json_string_ext(o, JSON_C_TO_STRING_PRETTY |
-                                                   JSON_C_TO_STRING_NOSLASHESCAPE));
+            cm_print_report(o);
+        }
     }
     if (o)
         json_object_put(o);

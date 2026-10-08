@@ -132,7 +132,7 @@ int cm_rule_add(struct cm_config *c, int argc, char **argv, enum cm_kind kind, s
             c->rules[j].rate = r.rate;
             c->rules[j].burst = r.burst;
             c->rules[j].period = r.period;
-            if (*r.comment)
+            if (seen & 8U)
                 strcpy(c->rules[j].comment, r.comment);
             return 0;
         }
@@ -312,9 +312,8 @@ int cm_protect(struct cm_config *c, struct cm_state *s, int argc, char **argv, s
             c->guard_all = !strcmp(v, "all");
         } else if (!strcmp(k, "--port")) {
             flag = 16;
-            char proto[5];
-            if (cm_service_config(c, v, &c->guard_ports[0], proto, e) || strcmp(proto, "tcp"))
-                return cm_fail(e, "SSH requires a TCP port");
+            if (cm_ssh_port(c, v, &c->guard_ports[0], e))
+                return -1;
             c->guard_port_count = 1;
         } else
             return cm_fail(e, "unknown protection option: %s", k);
@@ -324,10 +323,9 @@ int cm_protect(struct cm_config *c, struct cm_state *s, int argc, char **argv, s
     }
     if (!c->guard_enabled) {
         uint16_t port;
-        char proto[5];
         if (!(seen & 16)) {
-            if (cm_service_config(c, "ssh", &port, proto, e) || strcmp(proto, "tcp"))
-                return cm_fail(e, "SSH alias must be TCP; set a TCP alias or explicit --port");
+            if (cm_ssh_port(c, NULL, &port, e))
+                return -1;
             c->guard_ports[0] = port;
             c->guard_port_count = 1;
         }
@@ -336,6 +334,13 @@ int cm_protect(struct cm_config *c, struct cm_state *s, int argc, char **argv, s
     s->attempt_count = 0;
     *s->cursor = 0;
     return 0;
+}
+int cm_ssh_port(const struct cm_config *c, const char *override, uint16_t *port, struct cm_error *e)
+{
+    char proto[5];
+    if (cm_service_config(c, override ? override : "ssh", port, proto, e))
+        return -1;
+    return strcmp(proto, "tcp") ? cm_fail(e, "SSH requires a TCP alias or explicit TCP port") : 0;
 }
 int cm_aliases(struct cm_config *c, int argc, char **argv, bool json, struct cm_error *e)
 {

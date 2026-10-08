@@ -36,7 +36,7 @@ CM's rule actions are:
 - **Reject:** send a TCP reset or an ICMP/ICMPv6 port-unreachable response.
 - **Limit:** apply a per-address token bucket to new TCP SYN packets, then permit the service subject to ordinary ordering and other tables.
 
-Incoming meters use the source address; outgoing meters use the destination address. All matching rate gates run before ordinary allows, including overlapping rules. Tracking sets are bounded and expired automatically. A full tracking set drops matching new SYNs. Reloading/rebuilding a policy resets its meters and counters; a ban-only reconciliation preserves the policy table.
+Incoming meters use the source address; outgoing meters use the destination address. All matching rate gates run before ordinary allows, including overlapping rules. Tracking sets expire after the full refill horizon and share a 262144-entry total capacity budget. A full tracking set drops matching new SYNs. Policy changes/rebuilds reset meters; unchanged reloads, metadata edits and ban-only reconciliation preserve them.
 
 With explicit deny defaults, CM permits loopback, essential network-error messages, IPv6 neighbor/router discovery, and DHCP client exchanges. These are foundational network exceptions, not open application ports.
 
@@ -71,6 +71,8 @@ The counted events are failed password, public-key and keyboard-interactive auth
 Loopback networks are ignored automatically by default. Administrators can add trusted management networks. Manual bans remain explicit and are not suppressed by the automatic-protection ignore list.
 
 The monitor has one lifetime reader lock. It persists its cursor and attempt state, detects unavailable journal cursors, and avoids replaying obsolete entries. During a pending live change it pauses until confirmation or rollback. Staged desired configuration does not stop the monitor or replace its applied policy.
+
+At capacity, it declines new admissions and advances the journal cursor while preserving existing bans and successful work. Status includes heartbeat, lag, saturation, expected ban membership and rollback deadlines. A readable `plan` shows policy impact before reload; manual and automatic bans use committed settings while desired edits are staged.
 
 Timed bans keep an absolute expiry across restarts, while native set timeouts expire them even if the daemon stops. Permanent bans have no native timeout. Stop removes enforcement but keeps ban records; a later start reinstates unexpired bans.
 

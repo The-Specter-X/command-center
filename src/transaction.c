@@ -16,7 +16,7 @@ int cm_bundle_parse(struct json_object *o, struct cm_config *c, struct cm_state 
                     struct cm_error *e)
 {
     static const char *const keys[] = {"schema", "config",           "state", "deadline",
-                                       "active", "preserve_desired", NULL};
+                                       "active", "preserve_desired", "boot_id", NULL};
     uint64_t n;
     struct json_object *cfg, *state;
     if (!cm_keys(o, keys, e) || cm_get_int(o, "schema", 1, 1, &n, e) ||
@@ -31,6 +31,11 @@ int cm_bundle_parse(struct json_object *o, struct cm_config *c, struct cm_state 
     if (json_object_object_get_ex(o, "preserve_desired", &deadline) &&
         cm_get_bool(o, "preserve_desired", &preserve, e))
         return -1;
+    if (json_object_object_get_ex(o, "boot_id", &deadline)) {
+        char id[64];
+        if (cm_get_string(o, "boot_id", id, sizeof id, e) || !*id)
+            return cm_fail(e, "invalid checkpoint boot identity");
+    }
     if (cm_config_parse(cfg, c, e) || cm_state_parse(state, s, e))
         return -1;
     return cm_get_bool(o, "active", &c->enabled, e);
@@ -51,18 +56,15 @@ int cm_committed_policy(const struct cm_paths *p, struct cm_config *c, struct cm
     json_object_put(record);
     if (r)
         return -1;
-    record = NULL;
-    r = cm_read_json(p->run, "active.json", &record, e);
-    if (r == 1) {
-        c->enabled = false;
-        return 0;
-    }
-    if (!r) {
-        static const char *const keys[] = {"active", NULL};
-        r = !cm_keys(record, keys, e) || cm_get_bool(record, "active", &c->enabled, e) ? -1 : 0;
-        json_object_put(record);
-    }
-    return r;
+    return cm_activation(p, &c->enabled, &c->activation_known, e);
+}
+static int checkpoint_write(const struct cm_paths *p, struct json_object *o, struct cm_error *e)
+{
+    char id[64];
+    if (cm_boot_id(p, id, sizeof id, e))
+        return -1;
+    json_object_object_add(o, "boot_id", json_object_new_string(id));
+    return cm_write_json(p->state, "committed.json", o, e);
 }
 static int save(const struct cm_paths *p, const struct cm_config *c, const struct cm_state *s,
                 bool write_config, struct cm_error *e)
@@ -75,10 +77,7 @@ static int save(const struct cm_paths *p, const struct cm_config *c, const struc
     json_object_put(state);
     if (r)
         return -1;
-    struct json_object *active = json_object_new_object();
-    json_object_object_add(active, "active", json_object_new_boolean(c->enabled));
-    r = cm_write_json(p->run, "active.json", active, e);
-    json_object_put(active);
+    r = cm_activation_save(p, c->enabled, e);
     if (r)
         return -1;
     if (!p->offline) {
@@ -92,7 +91,7 @@ static int save(const struct cm_paths *p, const struct cm_config *c, const struc
     }
     if (!r) {
         struct json_object *committed = bundle(c, s);
-        r = cm_write_json(p->state, "committed.json", committed, e);
+        r = checkpoint_write(p, committed, e);
         json_object_put(committed);
     }
     return r;
@@ -119,7 +118,7 @@ static int restore(const struct cm_paths *p, struct json_object *record, struct 
     if (!r && json_object_object_get_ex(record, "preserve_desired", &flag))
         r = cm_get_bool(record, "preserve_desired", &preserve, e);
     if (!r)
-        r = save(p, c, s, !preserve, e);
+        r = save(p, c, s, !preserve || !cm_exists(p->config, "config.json"), e);
     free(c);
     free(s);
     return r;
@@ -185,6 +184,8 @@ int cm_transaction(const struct cm_paths *p, const struct cm_config *c, const st
         json_object_put(cfg);
         return staged;
     }
+    if (!c->activation_known)
+        return cm_fail(e, "runtime activation is unknown; use start or stop to reconcile it");
     if (cm_exists(p->state, "transaction.json"))
         return cm_fail(e, "an interrupted transaction needs recovery; run command-center recover");
     if (cm_exists(p->state, "pending.json"))
@@ -202,6 +203,12 @@ int cm_transaction(const struct cm_paths *p, const struct cm_config *c, const st
         r = cm_bundle_parse(committed, old, previous, e);
         json_object_put(committed);
     }
+    if (!r) {
+        bool active, known;
+        r = cm_activation(p, &active, &known, e);
+        if (!r && known)
+            old->enabled = active;
+    }
     if (!r)
         r = cm_state_load(p, previous, e);
     if (!r && !replace && !opt->state_only) {
@@ -218,14 +225,25 @@ int cm_transaction(const struct cm_paths *p, const struct cm_config *c, const st
         free(file_config);
     }
     bool a = false, b = false;
+    bool kernel_drift = false, policy_drift = false, membership_drift = false;
     size_t foreign = 0;
     if (!r && !p->offline) {
         int drift = cm_drift(p, &a, &b, &foreign, e);
+        kernel_drift = drift > 0;
+        policy_drift = drift > 0 && (drift & CM_DRIFT_POLICY);
         if (drift < 0)
             r = -1;
         else if (drift && !replace)
             r = cm_fail(e, "managed nftables rules changed outside Command Center; inspect status, "
                            "then explicitly reload to restore saved policy");
+        if (!r) {
+            int mismatch = cm_ban_drift(old, previous, e);
+            membership_drift = mismatch > 0;
+            if (mismatch < 0)
+                r = -1;
+            else if (mismatch && !replace && !opt->state_only)
+                r = cm_fail(e, "live ban membership changed; inspect status and reload");
+        }
     }
     if (r) {
         free(old);
@@ -242,21 +260,53 @@ int cm_transaction(const struct cm_paths *p, const struct cm_config *c, const st
         free(previous);
         return cm_fail(e, "state-only transactions cannot change policy or activation");
     }
-    char *script = cm_firewall_script(c, s, a, b, config_changed || replace || activation);
+    unsigned changes = cm_changes(old, c);
+    bool rebuild = policy_drift || activation || (changes & CM_CHANGE_POLICY);
+    bool native_change = kernel_drift || membership_drift || activation || opt->state_only ||
+        (changes & (CM_CHANGE_POLICY | CM_CHANGE_BANS));
+    char *script = native_change ? cm_firewall_script(c, s, a, b, rebuild) : cm_strdup("");
+    bool delta = false;
+    if (!p->offline && opt->state_only && b && c->enabled && !changes && !replace && !activation) {
+        if (!membership_drift) {
+            char *elements = cm_ban_delta(c, previous, s);
+            if (elements) {
+                free(script);
+                script = elements;
+                delta = true;
+            }
+        }
+    }
     if (opt->dry_run) {
+        r = cm_plan(p, c, opt, replace, false, e);
+        if (r) {
+            free(script);
+            free(old);
+            free(previous);
+            return -1;
+        }
         struct json_object *candidate = cm_config_json(c);
         printf("# Proposed configuration: %s\n",
                json_object_to_json_string_ext(candidate, JSON_C_TO_STRING_PLAIN));
         json_object_put(candidate);
         fputs(script, stdout);
-        if (!p->offline)
+        if (!p->offline && *script)
             r = cm_nft(script, true, NULL, e);
         free(script);
         free(old);
         free(previous);
         return r;
     }
-    if (!p->offline && cm_nft(script, true, NULL, e)) {
+    if (!p->offline && *script && cm_nft(script, true, NULL, e)) {
+        if (delta) {
+            free(script);
+            script = cm_firewall_script(c, s, a, b, rebuild);
+            delta = false;
+            e->text[0] = 0;
+            r = cm_nft(script, true, NULL, e);
+        } else
+            r = -1;
+    }
+    if (r) {
         free(script);
         free(old);
         free(previous);
@@ -266,7 +316,9 @@ int cm_transaction(const struct cm_paths *p, const struct cm_config *c, const st
     if (opt->state_only)
         json_object_object_add(prior, "preserve_desired", json_object_new_boolean(true));
     bool guarded = !opt->no_rollback && opt->rollback &&
-                   (config_changed || activation || replace) && (c->enabled || old->enabled);
+                   (activation || kernel_drift || membership_drift ||
+                    (changes & CM_CHANGE_ENFORCEMENT)) &&
+                   (c->enabled || old->enabled);
     if (activation && !config_changed && !replace && !c->rule_count && !c->guard_enabled &&
         !c->input_drop && !c->output_drop && !s->ban_count)
         guarded = false; /* A fresh passive start changes no filtering behavior. */
@@ -282,10 +334,18 @@ int cm_transaction(const struct cm_paths *p, const struct cm_config *c, const st
     }
     if (!r)
         r = cm_write_json(p->state, "transaction.json", prior, e);
-    if (!r && !p->offline)
+    if (!r && !p->offline && *script) {
         r = cm_nft(script, false, NULL, e);
+        if (r && delta) {
+            /* The failed native batch was atomic; a full owned-table repair is safe. */
+            free(script);
+            script = cm_firewall_script(c, s, a, b, rebuild);
+            e->text[0] = 0;
+            r = cm_nft(script, false, NULL, e);
+        }
+    }
     if (!r)
-        r = save(p, c, s, !opt->state_only, e);
+        r = save(p, c, s, !opt->state_only || checkpoint == 1, e);
     if (!r)
         r = cm_remove(p->state, "transaction.json", e);
     if (r) {
@@ -347,12 +407,24 @@ int cm_confirm(const struct cm_paths *p, struct cm_error *e)
         return configuration_drift < 0
                    ? -1
                    : cm_fail(e, "saved configuration changed; refusing to confirm");
+    bool active, known;
+    if (cm_activation(p, &active, &known, e))
+        return -1;
+    if (!known)
+        return cm_fail(e, "activation unknown; refusing to confirm, reconcile with rollback/start/stop");
     bool a, b;
     size_t foreign;
     if (!p->offline) {
         r = cm_drift(p, &a, &b, &foreign, e);
         if (r)
             return r < 0 ? -1 : cm_fail(e, "live policy changed; refusing to confirm");
+        struct cm_config *c = cm_alloc(sizeof *c);
+        struct cm_state *s = cm_alloc(sizeof *s);
+        r = cm_committed_policy(p, c, e) || cm_state_load(p, s, e) ? -1 : cm_ban_drift(c, s, e);
+        free(c);
+        free(s);
+        if (r)
+            return r < 0 ? -1 : cm_fail(e, "live ban membership changed; refusing to confirm");
     }
     if (cm_remove(p->state, "pending.json", e))
         return -1;
@@ -445,7 +517,11 @@ int cm_apply(const struct cm_paths *p, struct cm_error *e)
         r = cm_bundle_parse(record, c, s, e);
         json_object_put(record);
     }
+    struct json_object *intent = !r ? bundle(c, s) : NULL;
+    if (intent)
+        json_object_object_add(intent, "preserve_desired", json_object_new_boolean(true));
     c->enabled = true;
+    c->activation_known = true;
     bool state_failed = false;
     char state_error[1024] = {0};
     if (!r) {
@@ -459,6 +535,8 @@ int cm_apply(const struct cm_paths *p, struct cm_error *e)
             *s = *current;
         free(current);
     }
+    if (!r)
+        r = cm_write_json(p->state, "transaction.json", intent, e);
     if (!r && !p->offline) {
         bool a, b;
         size_t foreign;
@@ -489,17 +567,18 @@ int cm_apply(const struct cm_paths *p, struct cm_error *e)
             r = cm_write_json(p->state, "state.json", state, e);
             json_object_put(state);
         }
-        struct json_object *active = json_object_new_object();
-        json_object_object_add(active, "active", json_object_new_boolean(true));
         if (!r)
-            r = cm_write_json(p->run, "active.json", active, e);
-        json_object_put(active);
+            r = cm_activation_save(p, true, e);
         if (!r && !state_failed) {
             struct json_object *committed = bundle(c, s);
-            r = cm_write_json(p->state, "committed.json", committed, e);
+            r = checkpoint_write(p, committed, e);
             json_object_put(committed);
         }
     }
+    if (!r)
+        r = cm_remove(p->state, "transaction.json", e);
+    if (intent)
+        json_object_put(intent);
     free(c);
     free(s);
     if (!r && !p->offline)
@@ -577,21 +656,21 @@ int cm_suspend(const struct cm_paths *p, struct cm_error *e)
         if (!r) {
             r = cm_kernel_snapshot(&snapshot, &a, &b, &foreign, e);
             if (!r) {
-                r = cm_write_json(p->state, "applied.json", snapshot, e);
+                if (a || b)
+                    r = cm_fail(e, "CM tables remain after explicit cleanup");
+                if (!r)
+                    r = cm_write_json(p->state, "applied.json", snapshot, e);
                 json_object_put(snapshot);
             }
         }
     }
     if (!r) {
-        struct json_object *active = json_object_new_object();
-        json_object_object_add(active, "active", json_object_new_boolean(false));
-        r = cm_write_json(p->run, "active.json", active, e);
-        json_object_put(active);
+        r = cm_activation_save(p, false, e);
     }
     if (!r) {
         json_object_object_add(record, "active", json_object_new_boolean(false));
         json_object_object_del(record, "preserve_desired");
-        r = cm_write_json(p->state, "committed.json", record, e);
+        r = checkpoint_write(p, record, e);
     }
     if (!r)
         r = cm_remove(p->state, "transaction.json", e);

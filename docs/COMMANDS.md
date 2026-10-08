@@ -46,7 +46,7 @@ For allow/deny/reject, all matches every IP protocol. For limit, all means new T
 | `--rate N/second`, `N/minute`, `N/hour` | Token refill rate, 1–100000; default 6/minute for limit. |
 | `--burst N` | Bucket capacity, 1–100000; default 5. |
 
-Hostnames are not resolved in firewall rules. Contradictory address families and duplicate options are rejected. A new identical match/action definition updates its rate/burst/comment while retaining the rule number. Address-only rules use `all` plus the relevant filter.
+Hostnames are not resolved in firewall rules. Contradictory address families and duplicate options are rejected. A new identical match/action definition updates its rate/burst/comment while retaining the rule number. Omitted comments are preserved; `--comment ""` clears a comment. Address-only rules use `all` plus the relevant filter.
 
 ~~~sh
 cm allow ssh --from 198.51.100.0/24
@@ -60,7 +60,7 @@ cm limit all --rate 20/second --burst 40
 
 The outgoing example allows host-originated TCP to destination port 443 on 203.0.113.10. Under a passive outgoing policy it is usually redundant. It becomes an exception after `default out deny`. It does not allow incoming HTTPS or override another table's drop.
 
-Limits are per source address for incoming traffic and per destination address for outgoing traffic. SYN retransmissions can count; this is a token bucket, not an exact count of unique sessions. All matching rate gates run before ordinary rules. A full tracking set drops matching new SYNs. Reload resets meter state; ban-only updates preserve it.
+Limits are per source address for incoming traffic and per destination address for outgoing traffic. SYN retransmissions can count; this is a token bucket, not an exact count of unique sessions. All matching rate gates run before ordinary rules. A full tracking set drops matching new SYNs. Policy changes/structural policy repairs reset meters; unchanged reloads, metadata edits and ban-only changes preserve them. Expiry covers the full refill horizon, and all declared meter sets share a 262144-entry capacity budget.
 
 ~~~text
 cm rules [--json]
@@ -98,6 +98,7 @@ cm enable [--now]
 cm disable [--now]
 cm status [--json]
 cm doctor [--json]
+cm plan [--json]
 cm reload
 cm export
 cm check
@@ -111,9 +112,11 @@ Stop removes only CM enforcement and preserves saved rules/settings/bans. Boot e
 
 Enable/disable change systemd boot startup only. `--now` adds start/stop. Installation does neither.
 
-Status includes numbered desired rules, intended runtime activation, live CM table presence, profile/defaults, startup state, service states, bans, pending recovery and structural/configuration drift. Doctor uses the same health report. Offline status explicitly does not inspect the kernel.
+Status includes numbered desired rules, activation certainty, CM tables/loader consistency, profile/defaults, startup/service states, expected ban membership, pending/recovery deadlines, guard heartbeat/progress/lag and capacity. Doctor uses the same report. A required heartbeat older than ten seconds, saturation, lag beyond the configured failure window or overdue rollback is unhealthy. Guard counters are since daemon start. Offline status explicitly does not inspect the kernel.
 
-Reload validates desired settings and replaces CM objects atomically if active; it also commits desired settings when stopped. It never globally flushes the firewall or starts stopped CM.
+Reload validates desired settings and updates affected CM objects atomically if active; it also commits desired settings when stopped. Metadata-only and unchanged reloads preserve meters and do not require confirmation. It never globally flushes the firewall or starts stopped CM.
+
+Plan compares desired and committed defaults, rule IDs/order and guard/ban scope, and reports affected objects and confirmation seconds. JSON includes both configurations. It changes no files. Dry-run begins with the same summary. Missing current-boot activation is unknown, not stopped; ordinary edits fail until explicit start/stop (or pending rollback) reconciles it.
 
 Export emits the native batch for the desired policy as if CM were active. It does not execute it. Export should be inspected as CM-owned source, not applied over another firewall.
 
@@ -131,7 +134,7 @@ cm config validate
 cm config restore
 ~~~
 
-Confirm accepts a pending change before its deadline, after checking managed kernel and configuration drift. Verify management access with a new connection first.
+Confirm accepts a pending change before its deadline, after checking activation certainty, managed kernel/configuration drift and ban membership. Verify management access with a new connection first.
 
 Rollback restores the previous configuration/state from the pending record. A transient timer calls it automatically. Recovery records protect crashes during both apply and rollback.
 
@@ -162,7 +165,7 @@ cm protect ssh ignore add 198.51.100.0/24
 
 Scope all expands the resulting ban to all incoming host protocols; the trigger remains SSH authentication failures. The monitor does not detect HTTP authentication failures or forwarded-container traffic. An alias alone is not evidence of a service's authentication protocol.
 
-Counts use trusted root OpenSSH journal events, including supported sshd/sshd-session password, public-key and keyboard-interactive messages. Several events can occur in one connection. Settings changes reset attempt/cursor tracking; manual bans remain.
+Counts use trusted root OpenSSH journal events, including supported sshd/sshd-session password, public-key and keyboard-interactive messages. Several events can occur in one connection. Settings changes reset attempt/cursor tracking; manual bans remain. Saturation declines admissions, preserves existing bans and cursor progress, and reports dropped events without stopping the monitor. Expected native bans are checked and repaired during idle cycles too.
 
 The monitor pauses during pending confirmation, resumes after confirmation/rollback, and uses applied policy while desired policy is staged. It ignores loopback automatically unless that ignore entry is explicitly removed.
 
@@ -187,6 +190,8 @@ cm use NAME [--ssh-port PORT/tcp] [--keep-rules]
 ~~~
 
 Profile show is a read-only preview of the resulting desired configuration. Use applies/saves the profile.
+
+An explicit TCP management-port override takes precedence over the SSH alias. Passive does not require an SSH alias; implicit SSH ports for other profiles must resolve to TCP.
 
 | Name | Behavior |
 | --- | --- |
@@ -237,6 +242,8 @@ cm timezone [--json]
 
 Info combines CPU, memory, local filesystems and basic system identity. CPU samples aggregate and logical-core counters. Disk/inode reports use statvfs on local filesystems; network filesystems are skipped to avoid hanging on an unreachable mount. Disk and inode views share the filesystem records.
 
+Focused reports use compact text/tables by default and preserve their JSON form with `--json`. CPU-only sampling does not collect memory or mount/filesystem data.
+
 OS includes os-release, kernel and uptime. Hardware includes available DMI/CPU/block-device inventory. Time/timezone includes local/UTC time, configured zone and available systemd synchronization information. Missing optional information is represented as null/unavailable.
 
 ## Logging
@@ -276,6 +283,8 @@ Schedule installs/removes one timer drop-in for apt-daily-upgrade.timer. A custo
 
 Check delegates to unattended-upgrade dry-run. Run delegates to unattended-upgrade. Logs delegates to its system journal records. Existing origins/exclusions/package policy remain controlled by upstream APT fragments. Externally modified CM-owned files are rejected rather than overwritten.
 
+Package execution and logs do not hold the firewall/lifecycle locks. Owned policy/timer changes use a separate updates lock. CM-controlled systemctl/systemd-run/journalctl helpers have a 30-second deadline; package execution retains upstream coordination and cancellation behavior.
+
 Offline mode writes policy/drop-ins into its workspace and refuses actual update execution.
 
 ## Exit codes
@@ -285,6 +294,6 @@ Offline mode writes policy/drop-ins into its workspace and refuses actual update
 | 0 | Success |
 | 1 | Operational, validation, privilege, or recovery error |
 | 2 | Invalid global flags/usage |
-| 3 | Status/doctor detected drift, a recovery record, or an unhealthy required protector |
+| 3 | Status/doctor detected drift, recovery, unknown/inconsistent activation, unhealthy loader/guard, saturation/lag, or overdue rollback |
 
-An invalid local argument may return code 1. Error text goes to stderr. JSON is supported by rules, bans, profiles/profile preview, services/service show, config show, protection status, status/doctor, system/network reports and logs. Updates, export, check, config validate and mutations use text.
+An invalid local argument may return code 1. Error text goes to stderr. JSON is supported by rules, bans, plan, profiles/profile preview, services/service show, config show, protection status, status/doctor, system/network reports and logs. Updates, export, check, config validate and mutations use text.

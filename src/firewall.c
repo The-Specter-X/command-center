@@ -65,6 +65,23 @@ static void plumbing(FILE *f, bool out)
               "546 accept\n",
               f);
 }
+unsigned cm_meter_timeout(const struct cm_rule *r)
+{
+    uint64_t period = r->period ? r->period : 60;
+    uint64_t rate = r->rate ? r->rate : 1;
+    uint64_t refill = ((uint64_t)r->burst * period + rate - 1) / rate;
+    uint64_t timeout = refill > period * 2 ? refill : period * 2;
+    return (unsigned)(timeout + 1); /* Inputs bound this to 360000001 seconds. */
+}
+unsigned cm_meter_size(const struct cm_config *c)
+{
+    unsigned sets = 0;
+    for (size_t i = 0; i < c->rule_count; i++)
+        if (c->rules[i].kind == CM_LIMIT)
+            sets += 2;
+    unsigned size = sets ? CM_METER_BUDGET / sets : 65536U;
+    return size < 65536U ? size : 65536U;
+}
 char *cm_firewall_script(const struct cm_config *c, const struct cm_state *s, bool policy_exists,
                          bool bans_exist, bool rebuild)
 {
@@ -114,8 +131,8 @@ char *cm_firewall_script(const struct cm_config *c, const struct cm_state *s, bo
                 for (unsigned family = 4; family <= 6; family += 2) {
                     fprintf(f,
                             " set rate%u_%u { type ipv%u_addr; flags dynamic,timeout; timeout %us; "
-                            "size 65536; }\n",
-                            family, r->id, family, (r->period ? r->period : 60) * 2);
+                            "size %u; }\n",
+                            family, r->id, family, cm_meter_timeout(r), cm_meter_size(c));
                     fprintf(f,
                             " chain gate%u_%u { update @rate%u_%u { %s %s "
                             "limit rate %u/%s burst %u packets } return\n ",
@@ -289,17 +306,18 @@ void cm_normalize(struct json_object *o)
         json_object_object_get_ex(set, "table", &table) &&
         json_object_object_get_ex(set, "name", &name))
         json_object_object_del(set, "elem");
+    if (json_object_object_get_ex(o, "set", &set) && json_object_is_type(set, json_type_object))
+        json_object_object_del(set, "count");
     json_object_object_foreach(o, key, val)
     {
         (void)key;
         cm_normalize(val);
     }
 }
-int cm_kernel_snapshot(struct json_object **out, bool *policy, bool *bans, size_t *foreign,
-                       struct cm_error *e)
+static int objects(const char *command, struct json_object **out, struct cm_error *e)
 {
     char *text = NULL;
-    if (cm_nft("list ruleset\n", false, &text, e))
+    if (cm_nft(command, false, &text, e))
         return -1;
     struct json_object *root = json_tokener_parse(text);
     free(text);
@@ -310,53 +328,263 @@ int cm_kernel_snapshot(struct json_object **out, bool *policy, bool *bans, size_
             json_object_put(root);
         return cm_fail(e, "invalid libnftables ruleset output");
     }
+    *out = json_object_get(objects);
+    json_object_put(root);
+    return 0;
+}
+static bool named(struct json_object *v, const char *field, const char *value)
+{
+    struct json_object *x = NULL;
+    return json_object_object_get_ex(v, field, &x) &&
+        json_object_is_type(x, json_type_string) && !strcmp(json_object_get_string(x), value);
+}
+static int tables(bool *policy, bool *bans, struct cm_error *e)
+{
+    struct json_object *list = NULL;
+    if (objects("list tables\n", &list, e))
+        return -1;
     *policy = false;
     *bans = false;
-    *foreign = 0;
+    for (size_t i = 0; i < json_object_array_length(list); i++) {
+        struct json_object *v = NULL;
+        if (json_object_object_get_ex(json_object_array_get_idx(list, i), "table", &v) &&
+            named(v, "family", "inet")) {
+            *policy |= named(v, "name", CM_TABLE);
+            *bans |= named(v, "name", CM_BAN_TABLE);
+        }
+    }
+    json_object_put(list);
+    return 0;
+}
+int cm_kernel_snapshot(struct json_object **out, bool *policy, bool *bans, size_t *foreign,
+                       struct cm_error *e)
+{
+    *foreign = 0; /* Foreign-owner inventory belongs to status, not the mutation hot path. */
+    if (tables(policy, bans, e))
+        return -1;
     struct json_object *selected = json_object_new_array();
-    for (size_t i = 0; i < json_object_array_length(objects); i++) {
-        struct json_object *item = json_object_array_get_idx(objects, i), *v = NULL;
-        if (!json_object_is_type(item, json_type_object)) {
-            json_object_put(root);
+    const char *commands[] = {"list table inet " CM_TABLE "\n", "list table inet " CM_BAN_TABLE "\n"};
+    for (unsigned k = 0; k < 2; k++) {
+        if (!(k ? *bans : *policy))
+            continue;
+        struct json_object *list = NULL;
+        if (objects(commands[k], &list, e)) {
             json_object_put(selected);
-            return cm_fail(e, "unexpected libnftables object");
+            return -1;
         }
-        const char *type = NULL;
-        json_object_object_foreach(item, k, value)
-        {
-            type = k;
-            v = value;
-            break;
+        for (size_t i = 0; i < json_object_array_length(list); i++) {
+            struct json_object *v = json_object_array_get_idx(list, i), *ignore;
+            if (!json_object_object_get_ex(v, "metainfo", &ignore) &&
+                !json_object_object_get_ex(v, "element", &ignore))
+                json_object_array_add(selected, json_object_get(v));
         }
-        if (!v || !type || !strcmp(type, "metainfo"))
-            continue;
-        struct json_object *family, *name, *table, *hook;
-        const char *tbl = NULL;
-        if (!json_object_object_get_ex(v, "family", &family))
-            continue;
-        if (!strcmp(type, "table") && json_object_object_get_ex(v, "name", &name))
-            tbl = json_object_get_string(name);
-        else if (json_object_object_get_ex(v, "table", &table))
-            tbl = json_object_get_string(table);
-        bool ours = tbl && !strcmp(json_object_get_string(family), "inet") &&
-                    (!strcmp(tbl, CM_TABLE) || !strcmp(tbl, CM_BAN_TABLE));
-        if (ours) {
-            if (!strcmp(type, "table")) {
-                if (!strcmp(tbl, CM_TABLE))
-                    *policy = true;
-                else
-                    *bans = true;
-            }
-            /* Element listings can be separate objects for dynamic sets. */
-            if (strcmp(type, "element"))
-                json_object_array_add(selected, json_object_get(item));
-        } else if (!strcmp(type, "chain") && json_object_object_get_ex(v, "hook", &hook))
-            (*foreign)++;
+        json_object_put(list);
     }
     cm_normalize(selected);
-    json_object_put(root);
     *out = selected;
     return 0;
+}
+int cm_foreign_chains(size_t *count, struct cm_error *e)
+{
+    struct json_object *list = NULL;
+    if (objects("list ruleset\n", &list, e))
+        return -1;
+    *count = 0;
+    for (size_t i = 0; i < json_object_array_length(list); i++) {
+        struct json_object *v = NULL, *hook = NULL;
+        if (json_object_object_get_ex(json_object_array_get_idx(list, i), "chain", &v) &&
+            json_object_object_get_ex(v, "hook", &hook) &&
+            !(named(v, "family", "inet") &&
+              (named(v, "table", CM_TABLE) || named(v, "table", CM_BAN_TABLE))))
+            (*count)++;
+    }
+    json_object_put(list);
+    return 0;
+}
+static unsigned ban_set(const struct cm_ban *b)
+{
+    return (b->automatic ? 4U : 0U) + (b->all_ports ? 0U : 2U) +
+        (strchr(b->address, ':') ? 1U : 0U);
+}
+static bool enforced(const struct cm_config *c, const struct cm_ban *b, uint64_t now)
+{
+    return c->enabled && b->expires > now &&
+        (!b->automatic || (c->guard_enabled && !cm_ignored(c, b->address)));
+}
+static bool unchanged_ban(const struct cm_config *c, const struct cm_ban *b,
+                          const struct cm_state *s, uint64_t now)
+{
+    for (size_t i = 0; i < s->ban_count; i++)
+        if (enforced(c, &s->bans[i], now) && !strcmp(b->address, s->bans[i].address) &&
+            b->automatic == s->bans[i].automatic && b->all_ports == s->bans[i].all_ports &&
+            b->expires == s->bans[i].expires)
+            return true;
+    return false;
+}
+char *cm_ban_delta(const struct cm_config *c, const struct cm_state *old, const struct cm_state *next)
+{
+    const char *names[] = {"manual_all4", "manual_all6", "manual_ssh4", "manual_ssh6",
+                          "auto_all4", "auto_all6", "auto_ssh4", "auto_ssh6"};
+    char *buf = NULL;
+    size_t length = 0;
+    FILE *f = open_memstream(&buf, &length);
+    if (!f)
+        return NULL;
+    uint64_t now = cm_now();
+    for (size_t i = 0; i < old->ban_count; i++)
+        if (!unchanged_ban(c, &old->bans[i], next, now))
+            fprintf(f, "destroy element inet %s %s { %s }\n", CM_BAN_TABLE,
+                    names[ban_set(&old->bans[i])], old->bans[i].address);
+    for (size_t i = 0; i < next->ban_count; i++) {
+        const struct cm_ban *b = &next->bans[i];
+        if (!enforced(c, b, now) || unchanged_ban(c, b, old, now))
+            continue;
+        fprintf(f, "destroy element inet %s %s { %s }\nadd element inet %s %s { %s",
+                CM_BAN_TABLE, names[ban_set(b)], b->address, CM_BAN_TABLE, names[ban_set(b)], b->address);
+        if (b->expires != INT64_MAX)
+            fprintf(f, " timeout %llus", (unsigned long long)(b->expires - now));
+        fputs(" }\n", f);
+    }
+    if (fclose(f)) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+struct ban_reference {
+    const char *address;
+    size_t index;
+    unsigned set;
+};
+static int compare_ban_reference(const void *a, const void *b)
+{
+    const struct ban_reference *left = a, *right = b;
+    if (left->set != right->set)
+        return left->set < right->set ? -1 : 1;
+    return strcmp(left->address, right->address);
+}
+int cm_ban_drift(const struct cm_config *c, const struct cm_state *s, struct cm_error *e)
+{
+    bool policy, bans;
+    if (tables(&policy, &bans, e))
+        return -1;
+    uint64_t now = cm_now();
+    if (!bans) {
+        for (size_t i = 0; i < s->ban_count; i++)
+            if (enforced(c, &s->bans[i], now) && s->bans[i].expires > now + 2)
+                return 1;
+        return 0;
+    }
+    struct json_object *list = NULL;
+    if (objects("list table inet " CM_BAN_TABLE "\n", &list, e))
+        return -1;
+    const char *names[] = {"manual_all4", "manual_all6", "manual_ssh4", "manual_ssh6",
+                          "auto_all4", "auto_all6", "auto_ssh4", "auto_ssh6"};
+    struct ban_reference *references = cm_alloc((s->ban_count + 1) * sizeof *references);
+    size_t count = 0;
+    for (size_t i = 0; i < s->ban_count; i++)
+        if (enforced(c, &s->bans[i], now))
+            references[count++] = (struct ban_reference){s->bans[i].address, i, ban_set(&s->bans[i])};
+    qsort(references, count, sizeof *references, compare_ban_reference);
+    bool seen[CM_MAX_BANS] = {0};
+    int drift = 0;
+    for (size_t i = 0; i < json_object_array_length(list) && !drift; i++) {
+        struct json_object *set = NULL, *elements = NULL;
+        struct json_object *v = json_object_array_get_idx(list, i);
+        if (!json_object_object_get_ex(v, "set", &set) &&
+            !json_object_object_get_ex(v, "element", &set))
+            continue;
+        if (!json_object_object_get_ex(set, "elem", &elements))
+            continue;
+        if (!json_object_is_type(elements, json_type_array) ||
+            json_object_array_length(elements) > CM_MAX_BANS) {
+            drift = 1;
+            break;
+        }
+        unsigned k = 0;
+        while (k < 8 && !named(set, "name", names[k]))
+            k++;
+        if (k == 8)
+            continue;
+        for (size_t j = 0; j < json_object_array_length(elements); j++) {
+            struct json_object *element = json_object_array_get_idx(elements, j), *value = element,
+                               *attr = NULL, *expires = NULL, *timeout = NULL;
+            if (json_object_is_type(element, json_type_object)) {
+                if (!json_object_object_get_ex(element, "elem", &attr))
+                    attr = element;
+                if (!json_object_object_get_ex(attr, "val", &value)) {
+                    drift = 1;
+                    break;
+                }
+                json_object_object_get_ex(attr, "expires", &expires);
+                json_object_object_get_ex(attr, "timeout", &timeout);
+            }
+            if (expires && json_object_get_uint64(expires) <= 2)
+                continue; /* Natural expiry can race state collection by two seconds. */
+            if (!json_object_is_type(value, json_type_string)) {
+                drift = 1;
+                break;
+            }
+            struct ban_reference key = {json_object_get_string(value), 0, k};
+            const struct ban_reference *found = bsearch(&key, references, count,
+                                                       sizeof *references, compare_ban_reference);
+            if (!found || seen[found->index]) {
+                drift = 1;
+                break;
+            }
+            size_t at = found->index;
+            seen[at] = true;
+            bool timed = timeout && json_object_get_uint64(timeout) != 0;
+            if (timed == (s->bans[at].expires == INT64_MAX)) {
+                drift = 1;
+                break;
+            }
+            if (expires && s->bans[at].expires != INT64_MAX) {
+                uint64_t remaining = json_object_get_uint64(expires),
+                         expected = s->bans[at].expires - now;
+                if ((remaining > expected && remaining - expected > 2) ||
+                    (expected > remaining && expected - remaining > 2)) {
+                    drift = 1;
+                    break;
+                }
+            }
+        }
+    }
+    for (size_t i = 0; i < count; i++)
+        if (s->bans[references[i].index].expires > now + 2 && !seen[references[i].index])
+            drift = 1;
+    free(references);
+    json_object_put(list);
+    return drift;
+}
+static struct json_object *table_objects(struct json_object *list, const char *table)
+{
+    struct json_object *selected = json_object_new_array();
+    if (!json_object_is_type(list, json_type_array)) {
+        json_object_put(selected);
+        return NULL;
+    }
+    for (size_t i = 0; i < json_object_array_length(list); i++) {
+        struct json_object *object = json_object_array_get_idx(list, i);
+        bool valid = false, included = false;
+        if (json_object_is_type(object, json_type_object)) {
+            json_object_object_foreach(object, kind, value) {
+                const char *field = !strcmp(kind, "table") ? "name" : "table";
+                if (named(value, "family", "inet") &&
+                    (named(value, field, CM_TABLE) || named(value, field, CM_BAN_TABLE))) {
+                    valid = true;
+                    included |= named(value, field, table);
+                }
+            }
+        }
+        if (!valid) {
+            json_object_put(selected);
+            return NULL;
+        }
+        if (included)
+            json_object_array_add(selected, json_object_get(object));
+    }
+    return selected;
 }
 int cm_drift(const struct cm_paths *p, bool *policy, bool *bans, size_t *foreign,
              struct cm_error *e)
@@ -369,9 +597,35 @@ int cm_drift(const struct cm_paths *p, bool *policy, bool *bans, size_t *foreign
         json_object_put(live);
         return -1;
     }
-    bool equal = r == 1 ? !*policy && !*bans : json_object_equal(live, saved);
+    bool active = false, known = false;
+    if (cm_activation(p, &active, &known, e)) {
+        json_object_put(live);
+        if (saved)
+            json_object_put(saved);
+        return -1;
+    }
+    int drift = 0;
+    if (known && !active && !*policy && !*bans)
+        drift = 0; /* Disabled startup legitimately leaves last boot's snapshot unapplied. */
+    else if (r == 1)
+        drift = (*policy ? CM_DRIFT_POLICY : 0) | (*bans ? CM_DRIFT_BANS : 0);
+    else {
+        cm_normalize(saved);
+        const char *names[] = {CM_TABLE, CM_BAN_TABLE};
+        for (unsigned k = 0; k < 2; k++) {
+            struct json_object *a = table_objects(live, names[k]), *b = table_objects(saved, names[k]);
+            if (!a || !b)
+                drift |= CM_DRIFT_POLICY | CM_DRIFT_BANS;
+            else if (!json_object_equal(a, b))
+                drift |= k ? CM_DRIFT_BANS : CM_DRIFT_POLICY;
+            if (a)
+                json_object_put(a);
+            if (b)
+                json_object_put(b);
+        }
+    }
     json_object_put(live);
     if (saved)
         json_object_put(saved);
-    return equal ? 0 : 1;
+    return drift;
 }

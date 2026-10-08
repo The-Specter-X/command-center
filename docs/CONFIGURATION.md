@@ -23,6 +23,9 @@ CM does not manage forwarding, NAT, container-published bridge ports, SSH server
 | /run/command-center/active.json | Intended runtime activation for the current boot |
 | /run/command-center/lock | Shared-read/exclusive-mutation lock |
 | /run/command-center/guard.lock | One lifetime authentication-journal reader |
+| /run/command-center/lifecycle.lock | Serializes administrative intent through service reconciliation |
+| /run/command-center/updates.lock | Separate lock for owned update/timer configuration |
+| /run/command-center/guard-health.json | Guard heartbeat, journal progress/lag and capacity telemetry |
 | /etc/apt/apt.conf.d/90command-center | CM-owned unattended-update/reboot fragment |
 | /etc/systemd/system/apt-daily-upgrade.timer.d/90-command-center.conf | Optional owned daily schedule |
 
@@ -58,6 +61,8 @@ Offline mode places the same directory layout under the supplied root. Its boot 
 
 Activation is deliberately absent from desired configuration. Current activation lives under /run; boot startup lives in systemd enablement. This keeps start/stop independent of enable/disable.
 
+Runtime activation and committed checkpoints record the Linux boot ID. A missing marker for an active checkpoint in the same boot is unknown activation, reported as unhealthy; ordinary edits cannot interpret it as a stop request. Use explicit start/stop, or rollback when a change is pending. A checkpoint from a previous boot does not turn CM on when startup is disabled. Legacy records without a boot ID remain readable and acquire one on the next write.
+
 | Field | Values and meaning |
 | --- | --- |
 | schema | Exactly 2 for desired configuration |
@@ -83,7 +88,7 @@ All fields are required. Generate a valid configuration with `config show` or `p
 
 ## Validation and bounds
 
-CM rejects unknown JSON keys, duplicate keys (including escaped spellings), wrong types, embedded NULs, trailing data, invalid UTF-8, oversized files, inconsistent IP families, duplicate IDs/definitions, invalid rates and unsafe paths.
+CM rejects unknown JSON keys, duplicate keys (including escaped spellings), wrong types, nonfinite JSON numbers, embedded NULs, trailing data, invalid UTF-8, oversized files, inconsistent IP families, duplicate IDs/definitions, invalid rates and unsafe paths.
 
 Address inputs are numeric. Networks are normalized to their actual prefix, and IPv4-mapped addresses are normalized to IPv4. Interface names and aliases use a bounded identifier grammar. Comments use printable ASCII and are escaped when compiled.
 
@@ -98,23 +103,29 @@ Application files are opened relative to checked directories without following s
 | Persisted bans | 4096 |
 | Tracked authentication sources | 4096 |
 | Failure timestamps per source | 100 |
-| Dynamic connection-meter entries | 65536 per rule/IP family |
+| Dynamic connection-meter entries | Up to 65536 per set; 262144 total declared capacity |
 | JSON/text application file | 16 MiB |
 | JSON nesting | 32 levels |
 | Rule comment | 159 bytes |
 | Finite log view | 10000 records |
 
-A full ban/attempt store is an error rather than silently losing enforcement data. A full packet-meter set drops matching new SYNs. These bounds are not volumetric DDoS protection.
+Manual admission to a full ban store returns an error. The automatic guard declines new admissions, keeps all existing bans/tracking, persists successful work and cursor progress, and reports saturation without exiting. It retains up to the newest 100 timestamps for an existing source. No permanent ban is evicted to make space.
+
+Each limit declares two IP-family sets. Per-set capacity is the smaller of 65536 and floor(262144 / number of declared sets), so 256 limit rules receive 512 entries per set. A full packet-meter set drops matching new SYNs. Meter expiry is max(2 × period, ceil(burst × period / rate)) + 1 seconds; idle state cannot disappear before its bucket could fully refill. The entry budget is a capacity bound, not a measured kernel-memory ceiling or volumetric DDoS protection. The guard's 256 MiB service limit covers its userspace process, not all kernel allocations.
 
 ## Desired versus committed policy
 
 Ordinary changes compare desired settings with the committed checkpoint and refuse unapproved edits. `--stage` intentionally writes desired policy without applying it. `config validate` checks the schema; `check` also performs native validation in live mode. `reload` approves and applies desired changes.
 
-A ban reconciliation from the running monitor changes applied ban state without overwriting staged desired policy. Its recovery intent preserves the desired file as well.
+A manual or automatic ban reconciliation uses applied policy without overwriting staged desired policy. Its recovery intent preserves the desired file as well.
 
 Boot/startup loads the committed checkpoint. A malformed desired file cannot replace the approved policy during boot. Missing or invalid current ban state uses checkpoint bans at boot, reports the problem and requires explicit checkpoint recovery; it does not silently discard bans.
 
-Counters, native handles, dynamic meter entries and elapsed set timeouts are excluded from structural drift comparison. Modifying a rule, chain policy, hook, set definition or other managed structure is detected. CM does not treat an external edit to a ban set's individual elements as structural drift; authoritative persisted bans are reconciled on the next ban update/reload.
+Counters, native handles, dynamic meter entries and elapsed set timeouts are excluded from structural drift comparison. Modifying a rule, chain policy, hook, set definition or other managed structure is detected. Snapshot work lists table names and the two managed tables; only status inventories foreign base chains.
+
+Ban membership is verified separately, including origin, scope, permanent/timed status and remaining expiry, with a two-second natural-expiry allowance. Status flags missing/extra bans; reload repairs them. A running guard checks and repairs membership on idle cycles as well as event batches. Consistent ban-only updates use atomic element changes; unsupported/failed element operations fall back to rebuilding the CM ban table while preserving policy meters.
+
+Policy, ban scope, guard detection and metadata are classified separately. Alias/display/profile-label changes and unchanged reloads preserve native policy and do not require confirmation. Policy semantics or policy-table structural repair rebuild meters; ban-table structural repair preserves the policy table.
 
 ## Reboots and service state
 

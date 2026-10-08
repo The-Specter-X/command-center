@@ -463,6 +463,113 @@ class CLI(unittest.TestCase):
             self.assertIsInstance(json.loads(self.run_cm(name, "--json", "--interval", "250").stdout), (dict, list))
         self.run_cm("net", "routes", ok=False)
 
+    def test_missing_activation_is_unhealthy_and_never_implicitly_stops(self):
+        self.run_cm("allow", "ssh")
+        self.run_cm("default", "in", "deny")
+        self.run_cm("start", "--no-rollback")
+        checkpoint = self.state / "committed.json"
+        before = checkpoint.read_bytes()
+        (self.runtime / "active.json").unlink()
+        status = self.status(code=3)
+        self.assertFalse(status["activation_known"])
+        self.assertTrue(status["activation_drift"])
+        self.run_cm("allow", "http", "--no-rollback", ok=False)
+        self.assertEqual(checkpoint.read_bytes(), before)
+        self.run_cm("start", "--no-rollback")
+        self.assertTrue(self.status()["active"])
+        self.run_cm("allow", "http")
+        (self.runtime / "active.json").unlink()
+        self.run_cm("confirm", ok=False)
+        self.assertTrue((self.state / "pending.json").exists())
+        self.run_cm("rollback")
+        self.assertTrue(self.status()["active"])
+
+    def test_previous_boot_activation_is_inactive(self):
+        self.run_cm("start", "--no-rollback")
+        checkpoint = self.state / "committed.json"
+        saved = json.loads(checkpoint.read_text())
+        saved["boot_id"] = "previous-boot"
+        checkpoint.write_text(json.dumps(saved))
+        (self.runtime / "active.json").unlink()
+        self.run_cm("allow", "http")
+        self.assertFalse(self.status()["active"])
+        self.assertFalse((self.state / "pending.json").exists())
+
+    def test_metadata_plan_and_reload_preserve_policy(self):
+        self.run_cm("use", "guard-only")
+        self.run_cm("start", "--no-rollback")
+        self.run_cm("service", "set", "internal", "8080/tcp", "--stage")
+        plan = json.loads(self.run_cm("plan", "--json").stdout)
+        self.assertTrue(plan["metadata_changed"])
+        self.assertFalse(plan["policy_rebuild"])
+        self.assertEqual(plan["confirmation_seconds"], 0)
+        self.run_cm("reload")
+        self.assertFalse((self.state / "pending.json").exists())
+        self.run_cm("logging", "level", "debug")
+        self.assertFalse((self.state / "pending.json").exists())
+        self.run_cm("allow", "http", "--stage")
+        plan = json.loads(self.run_cm("plan", "--json").stdout)
+        self.assertTrue(plan["policy_rebuild"])
+        self.assertEqual(plan["added_rules"], [1])
+        self.assertEqual(plan["confirmation_seconds"], 120)
+
+    def test_profile_override_and_comment_clearing(self):
+        self.run_cm("service", "set", "ssh", "22/udp")
+        self.run_cm("use", "passive")
+        preview = json.loads(self.run_cm("profile", "show", "ssh-only", "--ssh-port",
+                                         "2222/tcp", "--json").stdout)
+        self.assertEqual(preview["guard"]["ports"], [2222])
+        self.run_cm("use", "ssh-only", "--ssh-port", "2222/tcp")
+        self.run_cm("allow", "http", "--comment", "old")
+        self.run_cm("allow", "http")
+        self.assertEqual(self.cfg()["rules"][-1]["comment"], "old")
+        self.run_cm("allow", "http", "--comment", "")
+        self.assertEqual(self.cfg()["rules"][-1]["comment"], "")
+        identity = self.cfg()["rules"][-1]["id"]
+        self.run_cm("allow", "http", "--comment", "replacement")
+        self.assertEqual(self.cfg()["rules"][-1]["comment"], "replacement")
+        self.assertEqual(self.cfg()["rules"][-1]["id"], identity)
+
+    def test_external_timer_edits_are_not_replaced_or_removed(self):
+        self.run_cm("updates", "schedule", "03:15")
+        timer = self.root / "etc/systemd/system/apt-daily-upgrade.timer.d/90-command-center.conf"
+        generated = timer.read_text()
+        lines = generated.splitlines(keepends=True)
+        reordered = "".join([*lines[:2], lines[3], lines[2], *lines[4:]])
+        for original in (generated + "AccuracySec=30s\n", generated.replace("Persistent=true", "Persistent=false"),
+                         reordered, generated.replace("# Managed by Command Center.", "# Administrator")):
+            with self.subTest(fragment=original):
+                timer.write_text(original)
+                for value in ("04:00", "default"):
+                    self.run_cm("updates", "schedule", value, ok=False)
+                    self.assertEqual(timer.read_text(), original)
+
+    def test_overdue_rollback_and_independent_locks(self):
+        self.run_cm("start")
+        self.run_cm("default", "in", "deny")
+        pending = self.state / "pending.json"
+        record = json.loads(pending.read_text())
+        record["deadline"] = 1
+        pending.write_text(json.dumps(record))
+        self.assertTrue(self.status(code=3)["rollback_overdue"])
+        with (self.runtime / "updates.lock").open("w+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.run_cm("rollback")
+        with (self.runtime / "lifecycle.lock").open("r+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            old = self.config.read_bytes()
+            self.run_cm("protect", "ssh", "--no-rollback", ok=False)
+            self.assertEqual(self.config.read_bytes(), old)
+
+    def test_bans_preserve_staged_desired_configuration(self):
+        self.run_cm("allow", "ssh")
+        self.run_cm("allow", "http", "--stage")
+        desired = self.config.read_bytes()
+        self.run_cm("ban", "192.0.2.44")
+        self.assertEqual(self.config.read_bytes(), desired)
+        self.run_cm("unban", "192.0.2.44")
+        self.assertEqual(self.config.read_bytes(), desired)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
