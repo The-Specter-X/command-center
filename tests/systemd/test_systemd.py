@@ -306,6 +306,21 @@ assert config.read_bytes() == saved
 after_upgrade = json.loads(run("nft", "--json", "list", "table", "inet", "command_center"))
 assert table_handle(before_upgrade) == table_handle(after_upgrade), "Package upgrade replaced live firewall."
 assert run("systemctl", "is-active", "command-center-guard.service", expected=3).strip() == "inactive"
+# A completed stop is successful when it cancels a guard's in-flight condition.
+condition = Path("/run/systemd/system/command-center-guard.service.d/90-cm-test-condition.conf")
+condition.parent.mkdir(parents=True, exist_ok=True)
+condition.write_text("[Service]\nExecCondition=\nExecCondition=/usr/bin/sleep 30\n")
+try:
+    run("systemctl", "daemon-reload")
+    run("systemctl", "start", "--no-block", "command-center-guard.service")
+    wait_for(lambda: run("systemctl", "show", "command-center-guard.service", "--property=ActiveState", "--value").strip() == "activating")
+    cm("start")
+    assert not unit_active("command-center-guard.service")
+finally:
+    condition.unlink()
+    condition.parent.rmdir()
+    run("systemctl", "daemon-reload")
+    run("systemctl", "reset-failed", "command-center-guard.service")
 cm("start")
 assert json.loads(cm("status", "--json"))["policy_table_present"]
 cm("default", "out", "deny", "--timeout", "120", guarded=True)

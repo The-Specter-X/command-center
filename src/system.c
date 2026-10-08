@@ -119,10 +119,13 @@ int cm_systemd(const char *action, bool guard, struct cm_error *e)
                 return -1;
             if (unit_busy(unit, &busy, e))
                 return -1;
+            /* Cancelling a running ExecCondition can produce failed/signal,
+             * even though the stop job completed and the unit is stopped. */
+            if (!busy && !strcmp(action, "stop") &&
+                (!strcmp(state, "inactive") || !strcmp(state, "failed")))
+                return 0;
             if (!strcmp(state, "failed"))
                 return cm_fail(e, "%s failed; inspect cm logs", unit);
-            if (!busy && !strcmp(action, "stop") && !strcmp(state, "inactive"))
-                return 0;
             if (!busy && !strcmp(action, "start") && !strcmp(state, "active"))
                 return 0;
             if (!busy && guard && !strcmp(state, "inactive"))

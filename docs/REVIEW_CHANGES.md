@@ -12,7 +12,7 @@ tables, Debian/systemd lifecycle and the existing host-firewall scope remain.
 | R3: missing activation becomes stop | Current-boot unknown activation refuses edits/confirmation; boot identity distinguishes stopped startup | Offline/native missing-marker and previous-boot cases |
 | R4: premature meter expiry | Full-refill horizon plus margin; total declared entry budget | Arithmetic/budget bounds; burst depletion/idle raw SYN counts for IPv4/IPv6 input/output |
 | R5: failed-start cleanup gap | Durable loader intent; explicit stop/removal independently cleans and verifies owned table absence | Interrupted first apply; missing/corrupt-state failed loader followed by stop/removal |
-| R6: stale service intent | Lifecycle serialization through re-read/reconciliation and service jobs | Both deterministic post-commit enable/disable orderings; service-job failure/retry |
+| R6: stale service intent | Lifecycle serialization through re-read/reconciliation and service jobs; completed stops tolerate a cancelled service condition | Both deterministic post-commit enable/disable orderings; actual masked-unit failure/retry; cancellation of an in-flight condition |
 | R7: metadata resets meters | Semantic policy/guard/ban/metadata classes and separate table drift | Depleted meter and native handle preservation; ban-structure-only repair |
 | R8: edited timer overwritten | Complete generated form required before replacement/removal; purge preserves edited fragments | Appended, modified, reordered and unmarked offline cases; package purge |
 | R9: CPU collects filesystems | CPU-only collector isolated; shared human report rendering | mountinfo denied: CPU succeeds, disk fails |
